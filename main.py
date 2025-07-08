@@ -7,8 +7,8 @@ import time
 
 app = FastAPI(
     title="README Generator API",
-    description="Generate comprehensive README files for GitHub repositories using various AI models",
-    version="1.0.0"
+    description="Generate comprehensive README files for GitHub repositories using Gemini 2.5 Flash",
+    version="2.0.0"
 )
 
 readme_service = ReadmeService()
@@ -17,42 +17,25 @@ file_service = FileService()
 @app.get("/")
 async def root():
     return {
-        "message": "README Generator API",
-        "version": "1.0.0",
-        "supported_models": readme_service.get_supported_models(),
+        "message": "README Generator API - Powered by Gemini 2.5 Flash",
+        "version": "2.0.0",
+        "ai_model": "gemini-2.5-flash",
         "endpoints": {
             "generate": "/generate-readme",
-            "models": "/models",
             "files": "/files"
         }
     }
 
-@app.get("/models")
-async def get_supported_models():
-    """Get list of supported AI models"""
-    return {
-        "supported_models": readme_service.get_supported_models(),
-        "default_model": "gemini"
-    }
-
 @app.post("/generate-readme", response_model=ReadmeResponse)
 async def generate_readme(request: ReadmeRequest):
-    """Generate README for a GitHub repository"""
+    """Generate README for a GitHub repository using Gemini 2.5 Flash"""
     try:
-        print(f"🚀 Received request: {request.owner_name}/{request.repo_name} with {request.ai_model}")
+        print(f"🚀 Received request: {request.owner_name}/{request.repo_name}")
         
-        # Validate AI model
-        if request.ai_model not in readme_service.get_supported_models():
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Unsupported AI model: {request.ai_model}. Supported models: {readme_service.get_supported_models()}"
-            )
-        
-        # Generate README
+        # Generate README using Gemini 2.5 Flash
         result = readme_service.generate_readme(
             owner=request.owner_name,
-            repo=request.repo_name,
-            ai_model=request.ai_model
+            repo=request.repo_name
         )
         
         return ReadmeResponse(

@@ -1,110 +1,289 @@
 import os
 import time
-from typing import Dict, Tuple
+from typing import Dict
 from models import ProjectMetadata
 from services.github_service import GitHubService
 from services.ai_service import AIService
 from services.file_service import FileService
 
+
 class ReadmeService:
     """Main service for generating README files"""
-    
+
     def __init__(self):
         self.github_service = GitHubService()
         self.ai_service = AIService()
         self.file_service = FileService()
-    
-    def generate_readme(self, owner: str, repo: str, ai_model: str) -> Dict:
-        """Generate README for a repository using specified AI model"""
+
+    def generate_readme(self, owner: str, repo: str) -> Dict:
+        """Generate README for a repository using Gemini 2.5 Flash"""
         start_time = time.time()
-        
+
         try:
-            print(f"🚀 Starting README generation for {owner}/{repo} using {ai_model}")
-            
+            print(f"🚀 Starting README generation for {owner}/{repo} using Gemini 2.5 Flash")
+
             # Get repository information
             repo_info = self.github_service.get_repo_info(owner, repo)
             default_branch = self.github_service.get_default_branch(owner, repo)
-            
+
             print(f"📋 Using branch: {default_branch}")
-            
+
             # Get repository structure and source files
             repo_structure = self.github_service.get_repo_structure(owner, repo, default_branch)
             source_files = self.github_service.fetch_source_files(owner, repo, repo_structure, default_branch)
-            
+
             if not source_files:
                 raise Exception("No source files found to analyze")
-            
+
             # Generate README content using AI
-            readme_content = self._generate_readme_content(repo_info, source_files, ai_model)
-            
+            readme_content = self._generate_readme_content(repo_info, source_files)
+
             # Extract metadata and clean content
             metadata = self._extract_metadata(readme_content)
             clean_content = self._clean_readme_content(readme_content)
-            
+
             # Save to local file
             file_path = self.file_service.save_readme(owner, repo, clean_content)
-            
+
             processing_time = round(time.time() - start_time, 2)
-            
+
             return {
                 'readme_content': clean_content,
                 'readme_length': len(clean_content),
                 'local_file_path': file_path,
                 'processing_time': processing_time,
                 'files_analyzed': len(source_files),
-                'ai_model_used': ai_model,
+                'ai_model_used': 'gemini-2.5-flash',
                 'branch_used': default_branch,
                 'metadata': metadata.__dict__,
                 'repo_info': repo_info
             }
-            
+
         except Exception as e:
             print(f"❌ README generation failed: {e}")
             raise
-    
-    def _generate_readme_content(self, repo_info: Dict, source_files: Dict, ai_model: str) -> str:
-        """Generate README content using AI"""
+
+    def _generate_readme_content(self, repo_info: Dict, source_files: Dict) -> str:
+        """Generate README content using AI with direct file content"""
         if not source_files:
             return self._create_fallback_readme(repo_info['repo'], repo_info['url'])
-        
+
         project_name = repo_info['repo']
         github_url = repo_info['url']
+
+        print(f"📝 Preparing content for README generation...")
+        start_time = time.time()
         
-        # Prepare file contents for AI analysis
+        # Prepare file contents for AI analysis (direct approach)
         file_contents = ""
         existing_readme_content = ""
-        
+
         for file_path, content in source_files.items():
             file_name = os.path.basename(file_path)
-            
+
             # Handle existing README separately
             if file_name.lower() in ['readme.md', 'readme.txt', 'readme']:
                 existing_readme_content = content[:2000]
                 continue
-            
+
             file_contents += f"\n=== FILE: {file_path} ===\n"
             file_contents += content[:3000]  # Limit content per file
             file_contents += "\n"
-        
-        # Create AI prompt
-        ai_prompt = self._create_ai_prompt(project_name, github_url, file_contents, existing_readme_content)
-        
+
+        # Create AI prompt with file content
+        ai_prompt = self._create_ai_prompt_optimized(
+            project_name, 
+            github_url, 
+            file_contents, 
+            existing_readme_content
+        )
+
+        preparation_time = round(time.time() - start_time, 2)
+        print(f"✅ Content preparation completed in {preparation_time}s")
+        print(f"📊 Total prompt size: {len(ai_prompt):,} characters")
+
         try:
-            print(f"🤖 Generating README using {ai_model} ({len(ai_prompt)} chars)")
+            print(f"🤖 Generating README with single API call...")
+            generation_start = time.time()
             
-            # Generate using specified AI model
-            generated_readme = self.ai_service.generate_readme(ai_model, ai_prompt)
+            generated_readme = self.ai_service.generate_readme(ai_prompt)
             
-            print(f"✅ Generated README using {ai_model}: {len(generated_readme)} characters")
+            generation_time = round(time.time() - generation_start, 2)
+            print(f"✅ Generated README in {generation_time}s: {len(generated_readme):,} characters")
             return generated_readme
-            
+
         except Exception as e:
-            print(f"❌ AI generation failed with {ai_model}: {e}")
+            print(f"❌ AI generation failed: {e}")
             return self._create_fallback_readme(project_name, github_url)
     
-    def _create_ai_prompt(self, project_name: str, github_url: str, file_contents: str, existing_readme: str) -> str:
+    def _create_ai_prompt_optimized(self, project_name: str, github_url: str, 
+                                  file_contents: str, existing_readme: str) -> str:
+        """Create optimized AI prompt with selected file content"""
+        
+        return f"""You are a world-class technical documentation specialist, markdown perfectionist, and UI/UX expert who creates README files that are both visually stunning and technically comprehensive. Your documentation is legendary for being accessible to beginners while impressing senior developers.
+
+PROJECT: {project_name}
+REPOSITORY: {github_url}
+
+PROJECT FILES FOR ANALYSIS:
+{file_contents}
+
+EXISTING README (USE AS REFERENCE AND EXTRACT USEFUL INFO):
+{existing_readme[:1000] if existing_readme else "No existing README found"}
+
+🎯 MISSION: Create a MASTERPIECE README that combines visual excellence with technical depth - the kind that makes developers stop scrolling and think "This is exactly what documentation should look like."
+
+📋 CRITICAL ANALYSIS REQUIREMENTS:
+1. DEEPLY ANALYZE THE SOURCE CODE FILES - extract architectural patterns, design decisions, and technical insights
+2. If existing README contains valuable information, incorporate and enhance it seamlessly
+3. Identify the ACTUAL project purpose, target audience, and real-world use cases
+4. Document REAL features with technical depth that both beginners and experts can appreciate
+5. Extract ACTUAL technologies, versions, and dependencies from package/build files
+6. Create CRYSTAL-CLEAR installation steps that actually work, with troubleshooting
+7. Document REAL API endpoints, functions, classes, and capabilities found in source code
+8. Identify architectural patterns and explain them in an accessible way
+9. Write as the project owner with confident, welcoming tone
+10. Make complex technical concepts understandable without dumbing them down
+
+🎨 VISUAL EXCELLENCE & PROFESSIONAL PRESENTATION:
+
+**STUNNING HEADER DESIGN:**
+- Create a breathtaking centered header with perfect visual hierarchy
+- Use a compelling tagline that instantly communicates value
+- Curate 6-8 beautiful, consistent badges that tell the tech story at a glance
+- Add subtle visual elements (dividers, spacing) that create professional polish
+
+**MASTERFUL CONTENT STRUCTURE:**
+- Every section should flow naturally and serve a clear purpose
+- Use progressive disclosure - start simple, add depth gradually
+- Create visual breathing room with strategic spacing and dividers
+- Balance information density with readability
+
+**TYPOGRAPHY & FORMATTING PERFECTION:**
+- Use HTML elements like a pro: <div align="center">, <details>, <summary>, <kbd>
+- Create beautiful code blocks with proper syntax highlighting
+- Use emojis strategically to guide the eye and create visual anchors
+- Perfect heading hierarchy that creates a scannable document structure
+
+**BEGINNER-TO-EXPERT ACCESSIBILITY:**
+- Start each section with a clear, simple explanation
+- Provide context before diving into technical details
+- Use analogies and real-world examples where helpful
+- Include "Why this matters" explanations for technical decisions
+- Offer both quick-start and detailed setup paths
+
+🏗️ TECHNICAL DEPTH WITH CLARITY:
+
+**ARCHITECTURE EXPLANATION:**
+- Identify and explain the architectural pattern in plain English
+- Show how components interact with simple diagrams or descriptions
+- Explain WHY these patterns were chosen (benefits, trade-offs)
+- Make it educational for developers learning these patterns
+
+**TECHNOLOGY STACK PRESENTATION:**
+- Present the tech stack as a story, not just a list
+- Explain why each technology was chosen
+- Show how technologies work together
+- Use beautiful, organized presentation (not overwhelming tables)
+
+**FEATURE DOCUMENTATION:**
+- Present features as user benefits, not just technical capabilities
+- Use scenarios and examples that developers can relate to
+- Show the progression from basic to advanced usage
+- Include visual elements (code examples, API responses) that illustrate concepts
+
+**DEVELOPER EXPERIENCE EXCELLENCE:**
+- **Prerequisites**: Clear, complete list with version requirements and installation links
+- **Quick Start**: Get developers running in under 5 minutes
+- **Detailed Setup**: Comprehensive guide for production deployment
+- **Configuration**: Real examples with explanations of each option
+- **Troubleshooting**: Common issues with actual solutions
+- **Testing**: How to verify everything works correctly
+
+**PLATFORM-SPECIFIC MASTERY:**
+
+**For Web Projects:**
+- Browser compatibility with clear support matrix
+- Environment setup for different development scenarios
+- Deployment options from development to production
+- Performance considerations and optimization tips
+
+**For Mobile Projects:**
+- Platform requirements with clear minimum versions
+- Development environment setup (IDEs, SDKs, tools)
+- Build and deployment processes for each platform
+- Platform-specific features and considerations
+
+**For Backend/API Projects:**
+- Database setup and configuration
+- Environment variables and security considerations
+- API documentation with real examples
+- Deployment and scaling considerations
+
+**INTERACTIVE & ENGAGING ELEMENTS:**
+- Collapsible sections for advanced topics
+- Quick navigation with anchor links
+- Code examples that developers can copy and run immediately
+- Visual callouts for important information
+- Progressive complexity - start simple, build up
+
+**VISUAL HIERARCHY MASTERY:**
+- Perfect balance of white space and content
+- Consistent styling throughout
+- Strategic use of dividers and visual breaks
+- Color coordination through badge selection
+- Professional typography that's easy to scan
+
+**ACCESSIBILITY & INCLUSIVITY:**
+- Clear language that welcomes developers of all levels
+- Explanations that don't assume prior knowledge
+- Multiple learning paths (visual, textual, hands-on)
+- Encouraging tone that builds confidence
+
+**SMART CONTENT ORGANIZATION:**
+- Logical flow from overview to implementation
+- Cross-references that help navigation
+- Consistent terminology throughout
+- Clear section purposes and outcomes
+
+**CONCLUSION EXCELLENCE:**
+Every README MUST end with an inspiring conclusion that includes:
+- A compelling summary of what makes this project special
+- Clear next steps for different types of users
+- Welcoming contribution guidelines (inline if no CONTRIBUTING.md exists)
+- Professional contact information and support channels
+- A vision statement that excites developers about the project's future
+
+**CRITICAL QUALITY STANDARDS:**
+- Only reference files that actually exist in the analyzed source code
+- Every code example must be accurate and runnable
+- All installation steps must be tested and verified
+- Technical explanations must be both accurate and accessible
+- Visual elements must enhance, not distract from, the content
+
+🎯 SUCCESS CRITERIA - CREATE A README THAT:
+- Makes beginners feel welcome and capable of contributing
+- Impresses senior developers with technical depth and clarity
+- Serves as a model for how documentation should be done
+- Balances comprehensive information with visual appeal
+- Creates excitement about the project and its possibilities
+- Functions as both tutorial and reference documentation
+
+IMPORTANT: After generating this masterpiece, add metadata in this EXACT format:
+
+---METADATA---
+PRIMARY_LANGUAGE: [detected primary programming language]
+PROJECT_TYPE: [web_app|mobile_app|api|library|cli_tool|desktop_app|data_science|game|other]
+TECH_STACK: [comma-separated list of main technologies/frameworks]
+FRAMEWORKS: [comma-separated list of frameworks detected]
+---END_METADATA---
+
+Generate a README that sets the gold standard for technical documentation - visually stunning, technically comprehensive, and accessible to all! 🚀✨"""
+        """Create optimized AI prompt with selected file content"""
+
+    def _create_ai_prompt_legacy(self, project_name: str, github_url: str, file_contents: str, existing_readme: str) -> str:
         """Create the AI prompt for README generation"""
-        return f"""You are a senior technical documentation specialist and software architect creating enterprise-grade README documentation.
+        return f"""You are a senior technical documentation specialist, Best UI/UX Designer of the year who's known for paying attention to smallest details, a perfectionist in design and drafting, and software architect creating enterprise-grade README documentation.
 
 PROJECT: {project_name}
 REPOSITORY: {github_url}
@@ -323,7 +502,7 @@ FRAMEWORKS: [comma-separated list of frameworks detected like Next.js, Django, F
 ---END_METADATA---
 
 Generate a README that demonstrates MASTERY of both the technology and documentation craft! 🚀"""
-    
+
     def _extract_metadata(self, readme_content: str) -> ProjectMetadata:
         """Extract metadata from README content"""
         try:
@@ -331,20 +510,20 @@ Generate a README that demonstrates MASTERY of both the technology and documenta
                 metadata_start = readme_content.find('---METADATA---') + len('---METADATA---')
                 metadata_end = readme_content.find('---END_METADATA---')
                 metadata_section = readme_content[metadata_start:metadata_end].strip()
-                
+
                 metadata_dict = {
                     'primary_language': 'Unknown',
                     'project_type': 'other',
                     'tech_stack': [],
                     'frameworks': []
                 }
-                
+
                 for line in metadata_section.split('\n'):
                     if ':' in line:
                         key, value = line.split(':', 1)
                         key = key.strip()
                         value = value.strip()
-                        
+
                         if key == 'PRIMARY_LANGUAGE':
                             metadata_dict['primary_language'] = value
                         elif key == 'PROJECT_TYPE':
@@ -353,9 +532,9 @@ Generate a README that demonstrates MASTERY of both the technology and documenta
                             metadata_dict['tech_stack'] = [tech.strip() for tech in value.split(',') if tech.strip()]
                         elif key == 'FRAMEWORKS':
                             metadata_dict['frameworks'] = [fw.strip() for fw in value.split(',') if fw.strip()]
-                
+
                 return ProjectMetadata(**metadata_dict)
-            
+
             # Fallback to defaults
             return ProjectMetadata(
                 primary_language='Unknown',
@@ -363,7 +542,7 @@ Generate a README that demonstrates MASTERY of both the technology and documenta
                 tech_stack=[],
                 frameworks=[]
             )
-            
+
         except Exception as e:
             print(f"❌ Error extracting metadata: {e}")
             return ProjectMetadata(
@@ -372,13 +551,13 @@ Generate a README that demonstrates MASTERY of both the technology and documenta
                 tech_stack=[],
                 frameworks=[]
             )
-    
+
     def _clean_readme_content(self, readme_content: str) -> str:
         """Remove metadata section from README content"""
         if '---METADATA---' in readme_content:
             return readme_content[:readme_content.find('---METADATA---')].strip()
         return readme_content
-    
+
     def _create_fallback_readme(self, project_name: str, github_url: str) -> str:
         """Create fallback README when AI generation fails"""
         return f"""# {project_name}
@@ -391,6 +570,7 @@ This project requires further analysis to generate comprehensive documentation.
 ## Repository
 - **Source**: {github_url}
 - **Analysis**: Basic fallback documentation
+- **AI Model**: Gemini 2.5 Flash (Optimized with File Summarization)
 
 ## Next Steps
 Please ensure the repository contains analyzable source code files for better documentation generation.
@@ -402,7 +582,7 @@ TECH_STACK:
 FRAMEWORKS: 
 ---END_METADATA---
 """
-    
+
     def get_supported_models(self) -> list:
         """Get list of supported AI models"""
-        return self.ai_service.get_supported_models()
+        return ['gemini-2.5-flash']

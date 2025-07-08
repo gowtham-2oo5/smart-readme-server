@@ -4,7 +4,6 @@ from typing import Dict, List, Optional
 class ReadmeRequest(BaseModel):
     repo_name: str
     owner_name: str
-    ai_model: str = "gemini"  # default to gemini
 
 class ProjectMetadata(BaseModel):
     primary_language: str

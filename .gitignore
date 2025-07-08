@@ -275,3 +275,5 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+PRIVATE_REPO_ACCESS_GUIDE.md
+services/file_summarizer.py
