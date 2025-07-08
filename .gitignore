@@ -225,11 +225,35 @@ $RECYCLE.BIN/
 # Generated README files (keep only for reference/testing)
 generated_readmes/
 
-# Test files
+# Demo and test files
+banner_demo.py
+banner_demo.html
+dark_banner_demo.py
+dark_banner_demo.html
+test_banner_integration.py
+test_banner_url.py
+test_banner_api.http
+test_env.py
+test_main.http
 test_*.py
 *_test.py
-test_*.http
 *.http
+
+# Unused service files
+services/banner_service_dual.py
+services/banner_service_typing.py
+services/file_summarizer.py
+
+# Legacy files
+original_lambda.py
+
+# Development documentation
+enhanced_prompt.md
+file_analysis_improvements.md
+refs/
+
+# Reference and guide files
+PRIVATE_REPO_ACCESS_GUIDE.md
 
 # Temporary files
 *.tmp
@@ -237,18 +261,7 @@ test_*.http
 *.swp
 *.swo
 *~
-refs/
 logs/
-
-services/__init__.py
-.idea
-
-enhanced_prompt.md
-file_analysis_improvements.md
-test_env.py
-test_main.http
-original_lambda.py
-
 
 # API Keys and sensitive data (already covered by .env but being explicit)
 config.json
@@ -274,6 +287,3 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-PRIVATE_REPO_ACCESS_GUIDE.md
-services/file_summarizer.py

@@ -34,18 +34,19 @@ class GeminiProvider(AIProvider):
                 ),
             ]
             
-            # Optimized generation config for better performance
+            # Optimized generation config for MAXIMUM QUALITY
             generate_content_config = types.GenerateContentConfig(
                 thinking_config=types.ThinkingConfig(
-                    thinking_budget=150,  # Further reduced thinking time
+                    thinking_budget=200,  # More thinking for better quality
                 ),
                 response_mime_type="text/plain",
-                temperature=0.2,  # Even lower temperature for more focused output
-                max_output_tokens=8000  # Increased limit for comprehensive READMEs
+                temperature=0.2,  # Balanced for quality and creativity
+                max_output_tokens=12000  # INCREASED for comprehensive READMEs
             )
 
-            # Use streaming to handle longer responses
+            # Use streaming to handle longer responses efficiently
             response_text = ""
+            chunk_count = 0
             for chunk in self.client.models.generate_content_stream(
                 model=self.model_version,
                 contents=contents,
@@ -53,7 +54,12 @@ class GeminiProvider(AIProvider):
             ):
                 if chunk.text:
                     response_text += chunk.text
+                    chunk_count += 1
+                    # Log progress for long generations
+                    if chunk_count % 10 == 0:
+                        print(f"📝 Generated {len(response_text):,} characters so far...")
             
+            print(f"✅ Final README: {len(response_text):,} characters generated")
             return response_text
 
         except Exception as e:

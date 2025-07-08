@@ -1,9 +1,18 @@
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
+class BannerConfig(BaseModel):
+    """🎨 Banner configuration for README generation"""
+    include_banner: bool = True
+    font: str = 'jetbrains'  # jetbrains, fira, source, roboto, inter, poppins
+    theme: str = 'github_dark'  # github_dark, midnight, cyberpunk, obsidian, matrix, neon, carbon
+    style: str = 'professional'  # professional, animated, minimal
+    custom_title: Optional[str] = None
+
 class ReadmeRequest(BaseModel):
     repo_name: str
     owner_name: str
+    banner_config: Optional[BannerConfig] = BannerConfig()
 
 class ProjectMetadata(BaseModel):
     primary_language: str
