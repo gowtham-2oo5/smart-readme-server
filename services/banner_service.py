@@ -91,26 +91,26 @@ class BannerService:
         """🌊 SICK Capsule Render Header Banner"""
         
         project_name = repo_info['repo'].replace('-', ' ').replace('_', ' ').title()
-        tech_stack = metadata.tech_stack[:2]
+        tech_stack = metadata.tech_stack[:3]
         
-        # 🚀 Emojis work perfectly in Capsule Render
-        tech_display = f" • {' + '.join(tech_stack)}" if tech_stack else ""
-        description = f"🚀 {metadata.primary_language} {metadata.project_type.title()}{tech_display}"
+        description = f"⚡ {metadata.primary_language} {metadata.project_type.title()}"
+        if tech_stack:
+            description += f" • {' + '.join(tech_stack)}"
         
-        color = self.language_colors.get(metadata.primary_language, self.language_colors['default'])
+        color = self.language_colors.get(metadata.primary_language, 'timeAuto')
         
         if style == 'professional':
-            banner_type = 'waving'
-            height = '200'
-        elif style == 'animated':
-            banner_type = 'cylinder'
-            height = '180'
-        elif style == 'minimal':
-            banner_type = 'rounded'
+            banner_type = 'soft'
             height = '150'
-        else:
+        elif style == 'animated':
             banner_type = 'waving'
-            height = '200'
+            height = '150'
+        elif style == 'minimal':
+            banner_type = 'rect'
+            height = '120'
+        else:
+            banner_type = 'soft'
+            height = '150'
         
         params = {
             'type': banner_type,
@@ -118,14 +118,14 @@ class BannerService:
             'height': height,
             'section': 'header',
             'text': project_name,
-            'fontSize': '45',
+            'fontSize': '50',
             'fontColor': 'ffffff',
             'fontAlign': '50',
-            'fontAlignY': '35',
+            'fontAlignY': '40',
             'desc': description,
             'descSize': '18',
             'descAlign': '50',
-            'descAlignY': '55',
+            'descAlignY': '65',
             'animation': 'fadeIn'
         }
         
@@ -152,15 +152,14 @@ class BannerService:
         
         params = {
             'lines': ';'.join(conclusion_lines),
-            'font': 'JetBrains Mono',
-            'size': '22',
-            'duration': '4000',
-            'pause': '1000',
+            'font': 'Inter',
+            'size': '20',
+            'duration': '3500',
+            'pause': '1500',
             'color': color,
             'center': 'true',
             'width': '600',
-            'height': '80',
-            'background': '0d1117'
+            'height': '60'
         }
         
         return f"{self.typing_svg_base}/?{urllib.parse.urlencode(params)}"

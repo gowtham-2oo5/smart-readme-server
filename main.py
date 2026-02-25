@@ -1,238 +1,284 @@
-from fastapi import FastAPI, HTTPException
+import asyncio
+import logging
+import logging.config
+import sys
+from functools import lru_cache
+from pathlib import Path
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from models import ReadmeRequest, ReadmeResponse, GeneratedReadme, BannerConfig
-from services.readme_service import ReadmeService
+
+from config import settings
+from models import BannerConfig, ProjectMetadata, ReadmeRequest, ReadmeResponse
 from services.file_service import FileService
-import time
+from services.readme_service import ReadmeService
+
+# ---------------------------------------------------------------------------
+# Logging — configure once at startup
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# App & Dependencies
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="README Generator API",
-    description="Generate comprehensive README files for GitHub repositories using Gemini 2.5 Flash",
-    version="2.0.0"
+    description="Generate comprehensive README files for GitHub repositories using Qwen 2.5 Coder 32B",
+    version="2.0.0",
 )
 
-readme_service = ReadmeService()
-file_service = FileService()
+# CORS — allow frontend clients to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@lru_cache()
+def get_readme_service() -> ReadmeService:
+    """Dependency: singleton ReadmeService."""
+    return ReadmeService()
+
+@lru_cache()
+def get_file_service() -> FileService:
+    """Dependency: singleton FileService."""
+    return FileService()
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 async def root():
     return {
-        "message": "README Generator API - Powered by Gemini 2.5 Flash",
+        "message": "README Generator API — Powered by Qwen 2.5 Coder 32B via NVIDIA API",
         "version": "2.0.0",
-        "ai_model": "gemini-2.5-flash",
+        "ai_model": settings.ai_model,
         "features": {
             "professional_banners": "🎨 Animated typing banners with JetBrains Mono",
-            "dark_themes": "🌙 Professional dark themes optimized for GitHub",
+            "dark_themes": "🌙 Professional dark themes optimised for GitHub",
             "custom_fonts": "🔤 Multiple professional fonts available",
-            "ai_generation": "🤖 AI-powered comprehensive README generation"
+            "ai_generation": "🤖 AI-powered comprehensive README generation",
         },
         "endpoints": {
             "generate": "/generate-readme",
+            "models": "/models",
+            "health": "/health",
             "files": "/files",
             "banner_preview": "/banner-preview/{owner}/{repo}",
-            "banner_options": "/banner-options"
-        }
+            "banner_options": "/banner-options",
+        },
+    }
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok", "version": "2.0.0", "ai_model": settings.ai_model}
+
+@app.get("/models")
+async def get_models(readme_svc: ReadmeService = Depends(get_readme_service)):
+    """List supported AI models."""
+    return {
+        "supported_models": readme_svc.get_supported_models(),
+        "default_model": settings.ai_model,
     }
 
 @app.post("/generate-readme", response_model=ReadmeResponse)
-async def generate_readme(request: ReadmeRequest):
-    """Generate README for a GitHub repository using Gemini 2.5 Flash with professional banner"""
+async def generate_readme(request: ReadmeRequest, readme_svc: ReadmeService = Depends(get_readme_service)):
+    """Generate a README for a GitHub repository using Qwen 2.5 Coder 32B."""
     try:
-        print(f"🚀 Received request: {request.owner_name}/{request.repo_name}")
-        
-        # 🎨 Log banner configuration
+        log.info("📥 Received request: %s/%s", request.owner_name, request.repo_name)
+
         if request.banner_config and request.banner_config.include_banner:
-            print(f"🎨 Banner config: {request.banner_config.style} style, {request.banner_config.font} font, {request.banner_config.theme} theme")
-        
-        # Generate README using Gemini 2.5 Flash with banner
-        result = readme_service.generate_readme(
+            log.info(
+                "🎨 Banner config: style=%s  font=%s  theme=%s",
+                request.banner_config.style,
+                request.banner_config.font,
+                request.banner_config.theme,
+            )
+
+        result = await readme_svc.generate_readme(
             owner=request.owner_name,
             repo=request.repo_name,
-            banner_config=request.banner_config
+            banner_config=request.banner_config,
         )
-        
-        return ReadmeResponse(
-            success=True,
-            data=result
-        )
-        
-    except Exception as e:
-        print(f"❌ Error generating README: {e}")
-        return ReadmeResponse(
-            success=False,
-            error=str(e)
-        )
+
+        return ReadmeResponse(success=True, data=result)
+
+    except Exception as exc:
+        log.error("❌ Error generating README: %s", exc)
+        # Returning 500 simplifies the client processing logic, instead of 200 with success=False implicitly
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating README: {str(exc)}"
+        ) from exc
+
 
 @app.get("/files")
-async def list_generated_files():
-    """List all generated README files"""
+async def list_generated_files(file_svc: FileService = Depends(get_file_service)):
+    """List all generated README files."""
     try:
-        files = file_service.list_generated_readmes()
-        return {
-            "success": True,
-            "files": files,
-            "total_files": len(files)
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        files = file_svc.list_generated_readmes()
+        return {"success": True, "files": files, "total_files": len(files)}
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
 
 @app.get("/files/{file_name}")
-async def get_file_content(file_name: str):
-    """Get content of a specific README file"""
+async def get_file_content(file_name: str, file_svc: FileService = Depends(get_file_service)):
+    """Retrieve the content of a specific saved README file."""
     try:
-        file_path = f"./generated_readmes/{file_name}"
-        content = file_service.read_readme(file_path)
-        file_info = file_service.get_file_info(file_path)
-        
-        return {
-            "success": True,
-            "content": content,
-            "file_info": file_info
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        safe_name = Path(file_name).name  # prevent path traversal
+        file_path = f"./generated_readmes/{safe_name}"
+        content = file_svc.read_readme(file_path)
+        file_info = file_svc.get_file_info(file_path)
+        return {"success": True, "content": content, "file_info": file_info}
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File '{file_name}' not found.")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+@app.delete("/files/{file_name}")
+async def delete_file(file_name: str, file_svc: FileService = Depends(get_file_service)):
+    """Delete a generated README file."""
+    try:
+        safe_name = Path(file_name).name  # prevent path traversal
+        file_path = f"./generated_readmes/{safe_name}"
+        if file_svc.delete_readme(file_path):
+            return {"success": True, "message": f"File '{file_name}' deleted successfully."}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File '{file_name}' not found.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
 
 @app.get("/banner-preview/{owner}/{repo}")
 async def preview_banner(
-    owner: str, 
-    repo: str, 
-    font: str = 'jetbrains',
-    theme: str = 'github_dark',
-    style: str = 'professional'
+    owner: str,
+    repo: str,
+    font: str = "jetbrains",
+    theme: str = "github_dark",
+    style: str = "professional",
+    readme_svc: ReadmeService = Depends(get_readme_service)
 ):
-    """🎨 Preview DUAL professional banners for a repository"""
+    """🎨 Preview dual professional banners for a repository."""
     try:
-        print(f"🎨 Generating DUAL banner preview for {owner}/{repo}")
-        
-        # Get basic repo info
-        repo_info = readme_service.github_service.get_repo_info(owner, repo)
-        
-        # Get repository structure for metadata analysis
-        default_branch = readme_service.github_service.get_default_branch(owner, repo)
-        repo_structure = readme_service.github_service.get_repo_structure(owner, repo, default_branch)
-        source_files = readme_service.github_service.fetch_source_files(owner, repo, repo_structure, default_branch)
-        
-        # Analyze metadata with fallback
+        log.info("🎨 Generating dual banner preview for %s/%s", owner, repo)
+
+        # Gather repo data
+        repo_info = readme_svc.github_service.get_repo_info(owner, repo)
+        default_branch = await readme_svc.github_service.get_default_branch(owner, repo)
+        repo_structure = await readme_svc.github_service.get_repo_structure(owner, repo, default_branch)
+        source_files = await readme_svc.github_service.fetch_source_files(
+            owner, repo, repo_structure, default_branch
+        )
+
+        # Analyse metadata with graceful fallback
         try:
             if source_files:
-                metadata = readme_service._analyze_project_metadata(source_files, repo_structure)
+                metadata = readme_svc._analyze_project_metadata(source_files, repo_structure)
             else:
-                raise Exception("No source files found")
-        except Exception as e:
-            print(f"⚠️ Using fallback metadata: {e}")
-            # Fallback metadata
+                raise ValueError("No source files found")
+        except Exception as exc:
+            log.warning("⚠️ Using fallback metadata: %s", exc)
             metadata = ProjectMetadata(
                 primary_language="Python",
-                project_type="api", 
+                project_type="api",
                 tech_stack=["Python"],
-                frameworks=[]
+                frameworks=[],
             )
-        
-        # Generate DUAL banners with error handling
+
+        # Generate banner URLs
         try:
-            header_banner_url, conclusion_banner_url = readme_service.banner_service.generate_dual_banners(
+            header_banner_url, conclusion_banner_url = readme_svc.banner_service.generate_dual_banners(
                 repo_info=repo_info,
                 metadata=metadata,
                 font=font,
                 theme=theme,
-                style=style
+                style=style,
             )
-        except Exception as e:
-            print(f"❌ Banner generation failed: {e}")
-            return {"success": False, "error": f"Banner generation failed: {str(e)}"}
-        
-        # Generate preview HTML for both banners
+        except Exception as exc:
+            log.error("❌ Banner generation failed: %s", exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Banner generation failed: {exc}")
+
+        # Build preview HTML
         try:
-            header_preview = readme_service.banner_service.get_banner_preview_html(
-                header_banner_url, f"Header - {style.title()} Capsule Banner"
+            header_preview = readme_svc.banner_service.get_banner_preview_html(
+                header_banner_url, f"Header — {style.title()} Capsule Banner"
             )
-            conclusion_preview = readme_service.banner_service.get_banner_preview_html(
-                conclusion_banner_url, "Conclusion - Typing SVG Banner"
+            conclusion_preview = readme_svc.banner_service.get_banner_preview_html(
+                conclusion_banner_url, "Conclusion — Typing SVG Banner"
             )
-        except Exception as e:
-            print(f"⚠️ Preview HTML generation failed: {e}")
+        except Exception as exc:
+            log.warning("⚠️ Preview HTML generation failed: %s", exc)
             header_preview = f'<img src="{header_banner_url}" alt="Header Banner">'
             conclusion_preview = f'<img src="{conclusion_banner_url}" alt="Conclusion Banner">'
-        
+
         return {
             "success": True,
             "dual_banners": {
                 "header": {
                     "url": header_banner_url,
                     "type": "Capsule Render",
-                    "preview_html": header_preview
+                    "preview_html": header_preview,
                 },
                 "conclusion": {
                     "url": conclusion_banner_url,
                     "type": "Typing SVG",
-                    "preview_html": conclusion_preview
-                }
+                    "preview_html": conclusion_preview,
+                },
             },
             "metadata": {
                 "primary_language": metadata.primary_language,
                 "tech_stack": metadata.tech_stack,
-                "project_type": metadata.project_type
+                "project_type": metadata.project_type,
             },
-            "config": {
-                "font": font,
-                "theme": theme,
-                "style": style
-            }
+            "config": {"font": font, "theme": theme, "style": style},
         }
-        
-    except Exception as e:
-        print(f"❌ Banner preview error: {e}")
-        return {"success": False, "error": str(e)}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("❌ Banner preview error: %s", exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
 
 @app.get("/banner-options")
-async def get_banner_options():
-    """🎨 Get available banner configuration options"""
+async def get_banner_options(readme_svc: ReadmeService = Depends(get_readme_service)):
+    """🎨 List all available banner configuration options."""
     try:
         return {
             "success": True,
             "options": {
-                "fonts": readme_service.banner_service.get_supported_fonts(),
-                "themes": readme_service.banner_service.get_supported_themes(),
+                "fonts": readme_svc.banner_service.get_supported_fonts(),
+                "themes": readme_svc.banner_service.get_supported_themes(),
                 "styles": {
                     "professional": "Multi-line professional banner with tech stack",
-                    "animated": "Single-line animated banner with neon effects", 
-                    "minimal": "Clean minimal banner with essential info"
-                }
+                    "animated": "Single-line animated banner with neon effects",
+                    "minimal": "Clean minimal banner with essential info",
+                },
             },
-            "defaults": {
-                "font": "jetbrains",
-                "theme": "github_dark",
-                "style": "professional"
-            }
+            "defaults": {"font": "jetbrains", "theme": "github_dark", "style": "professional"},
         }
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
-@app.delete("/files/{file_name}")
-async def delete_file(file_name: str):
-    """Delete a generated README file"""
-    try:
-        file_path = f"./generated_readmes/{file_name}"
-        success = file_service.delete_readme(file_path)
-        
-        if success:
-            return {"success": True, "message": f"File {file_name} deleted successfully"}
-        else:
-            return {"success": False, "error": "File not found"}
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

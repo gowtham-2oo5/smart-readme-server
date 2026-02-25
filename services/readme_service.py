@@ -1,402 +1,445 @@
+import asyncio
+import logging
 import os
 import time
-from typing import Dict, List
-from models import ProjectMetadata, BannerConfig
-from services.github_service import GitHubService
+from typing import Dict, List, Optional
+
+from config import settings
+from models import BannerConfig, ProjectMetadata
 from services.ai_service import AIService
-from services.file_service import FileService
 from services.banner_service import BannerService
+from services.file_service import FileService
+from services.github_service import GitHubService
+
+log = logging.getLogger(__name__)
 
 
 class ReadmeService:
-    """Main service for generating README files"""
+    """Orchestrates the full README generation pipeline."""
 
     def __init__(self):
         self.github_service = GitHubService()
         self.ai_service = AIService()
         self.file_service = FileService()
-        self.banner_service = BannerService()  # 🎨 Add banner service
+        self.banner_service = BannerService()
 
-    def generate_readme(self, owner: str, repo: str, banner_config: BannerConfig = None) -> Dict:
-        """Generate README for a repository using Gemini 2.5 Flash with professional banner"""
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def generate_readme(
+        self, owner: str, repo: str, banner_config: Optional[BannerConfig] = None
+    ) -> Dict:
+        """Generate a README for a GitHub repository using gitingest."""
         start_time = time.time()
+        log.info("🚀 Starting README generation for %s/%s", owner, repo)
 
-        try:
-            print(f"🚀 Starting README generation for {owner}/{repo} using Gemini 2.5 Flash")
+        # 1. Gather repository information
+        repo_info = self.github_service.get_repo_info(owner, repo)
+        default_branch = await self.github_service.get_default_branch(owner, repo)
+        log.info("📋 Using branch: %s", default_branch)
 
-            # Get repository information
-            repo_info = self.github_service.get_repo_info(owner, repo)
-            default_branch = self.github_service.get_default_branch(owner, repo)
-
-            print(f"📋 Using branch: {default_branch}")
-
-            # Get repository structure and source files
-            repo_structure = self.github_service.get_repo_structure(owner, repo, default_branch)
-            source_files = self.github_service.fetch_source_files(owner, repo, repo_structure, default_branch)
-
-            if not source_files:
-                raise Exception("No source files found to analyze")
-
-            # Extract metadata first (needed for banner generation)
-            metadata = self._analyze_project_metadata(source_files, repo_structure)
-            
-            # 🎨 Generate DUAL professional banners if requested
-            header_banner_url = None
-            conclusion_banner_url = None
-            
-            if banner_config and banner_config.include_banner:
-                try:
-                    print(f"🎨 Generating DUAL banners: Capsule header + Typing conclusion...")
-                    
-                    # Generate both banners
-                    header_banner_url, conclusion_banner_url = self.banner_service.generate_dual_banners(
-                        repo_info=repo_info,
-                        metadata=metadata,
-                        font=banner_config.font,
-                        theme=banner_config.theme,
-                        style=banner_config.style
-                    )
-                    
-                    print(f"✅ DUAL banners generated!")
-                    print(f"🌊 Header: Capsule {banner_config.style} with {banner_config.theme} theme")
-                    print(f"⌨️ Conclusion: Typing SVG with JetBrains Mono")
-                    
-                except Exception as e:
-                    print(f"⚠️ Banner generation failed, continuing without banners: {e}")
-                    header_banner_url = None
-                    conclusion_banner_url = None
-
-            # Generate README content using AI (include both banners in prompt)
-            readme_content = self._generate_readme_content(
-                repo_info, source_files, metadata, header_banner_url, conclusion_banner_url
-            )
-
-            # Clean content
-            clean_content = self._clean_readme_content(readme_content)
-
-            # Save to local file
-            file_path = self.file_service.save_readme(owner, repo, clean_content)
-
-            processing_time = round(time.time() - start_time, 2)
-
-            result = {
-                'readme_content': clean_content,
-                'readme_length': len(clean_content),
-                'local_file_path': file_path,
-                'processing_time': processing_time,
-                'files_analyzed': len(source_files),
-                'ai_model_used': 'gemini-2.5-flash',
-                'branch_used': default_branch,
-                'metadata': metadata.__dict__,
-                'repo_info': repo_info,
-                'header_banner_url': header_banner_url if banner_config and banner_config.include_banner else None,
-                'conclusion_banner_url': conclusion_banner_url if banner_config and banner_config.include_banner else None,
-                'dual_banners_enabled': banner_config.include_banner if banner_config else False
-            }
-            
-            return result
-
-        except Exception as e:
-            print(f"❌ README generation failed: {e}")
-            raise
-
-    def _generate_readme_content(self, repo_info: Dict, source_files: Dict, metadata: ProjectMetadata, header_banner_url: str = None, conclusion_banner_url: str = None) -> str:
-        """Generate README content using AI with dual banners"""
-        if not source_files:
-            return self._create_fallback_readme(repo_info['repo'], repo_info['url'], header_banner_url, conclusion_banner_url)
-
-        project_name = repo_info['repo']
-        github_url = repo_info['url']
-
-        print(f"📝 Preparing content for README generation...")
-        start_time = time.time()
+        log.info("📥 Ingesting repository using gitingest...")
+        from gitingest import ingest
+        url = f"https://github.com/{owner}/{repo}"
         
-        # Prepare file contents for AI analysis (direct approach)
-        file_contents = ""
-        existing_readme_content = ""
+        try:
+            # Run the synchronous `ingest` inside a thread so it initializes its own clean 
+            # ProactorEventLoop on Windows, bypassing Uvicorn's restrictive SelectorEventLoop.
+            summary_str, tree_str, gitingest_content = await asyncio.to_thread(
+                ingest,
+                url,
+                exclude_patterns={'test', 'tests', 'docs', 'assets', 'public', '.idea', 'node_modules', '.git', 'migrations', 'alembic'},
+                token=settings.github_token
+            )
+            log.info("✅ Gitingest completed! Tree size: %d, Content size: %d", len(tree_str), len(gitingest_content))
+        except Exception as e:
+            import traceback
+            with open("gitingest_error.log", "w") as f:
+                traceback.print_exc(file=f)
+            log.error("❌ Gitingest failed: %r", e)
+            raise ValueError(f"Failed to ingest repository: {repr(e)}")
 
-        for file_path, content in source_files.items():
-            file_name = os.path.basename(file_path)
+        if not gitingest_content:
+            raise ValueError("No analysable source files found in this repository.")
 
-            # Handle existing README separately
-            if file_name.lower() in ['readme.md', 'readme.txt', 'readme']:
-                existing_readme_content = content[:2000]
+        # Reconstruct source_files dict for metadata heuristics
+        import re
+        source_files = {}
+        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
+            if not block.strip():
                 continue
+            parts = block.split("\n" + "="*48 + "\n", 1)
+            if len(parts) == 2:
+                file_path = parts[0].strip()
+                file_body = parts[1].strip()
+                # we only need a few chars for metadata detection
+                source_files[file_path] = file_body[:2000]
 
-            file_contents += f"\n=== FILE: {file_path} ===\n"
-            file_contents += content[:2000]  # Reduced per-file limit to save input tokens for better output
-            file_contents += "\n"
+        # 2. Detect project metadata (heuristic — no AI call)
+        metadata = self._analyze_project_metadata(source_files, [])
 
-        # Create AI prompt with file content and dual banners
-        ai_prompt = self._create_ai_prompt_optimized(
-            project_name, 
-            github_url, 
-            file_contents, 
-            existing_readme_content,
-            metadata,
-            header_banner_url,  # 🌊 Header banner
-            conclusion_banner_url  # ⌨️ Conclusion banner
+        # 3. Generate dual banners (URLs only — no HTTP calls)
+        header_banner_url: Optional[str] = None
+        conclusion_banner_url: Optional[str] = None
+
+        if banner_config and banner_config.include_banner:
+            try:
+                log.info("🎨 Generating dual banners…")
+                header_banner_url, conclusion_banner_url = self.banner_service.generate_dual_banners(
+                    repo_info=repo_info,
+                    metadata=metadata,
+                    font=banner_config.font,
+                    theme=banner_config.theme,
+                    style=banner_config.style,
+                )
+                log.info("✅ Dual banners generated successfully")
+            except Exception as exc:
+                log.warning("⚠️ Banner generation failed — continuing without banners: %s", exc)
+
+        # 4. Generate README content via AI
+        readme_content = await self._generate_readme_content(
+            repo_info, summary_str, tree_str, gitingest_content, metadata, header_banner_url, conclusion_banner_url
         )
 
-        preparation_time = round(time.time() - start_time, 2)
-        print(f"✅ Content preparation completed in {preparation_time}s")
-        print(f"📊 Total prompt size: {len(ai_prompt):,} characters")
+        # 5. Strip the AI-appended metadata block and persist
+        clean_content = self._clean_readme_content(readme_content)
+        file_path = self.file_service.save_readme(owner, repo, clean_content)
+
+        processing_time = round(time.time() - start_time, 2)
+        log.info("✅ README generation complete in %ss", processing_time)
+
+        return {
+            "readme_content": clean_content,
+            "readme_length": len(clean_content),
+            "local_file_path": file_path,
+            "processing_time": processing_time,
+            "files_analyzed": len(source_files),
+            "ai_model_used": "qwen/qwen2.5-coder-32b-instruct",
+            "branch_used": default_branch,
+            "metadata": metadata.__dict__,
+            "repo_info": repo_info,
+            "header_banner_url": header_banner_url if banner_config and banner_config.include_banner else None,
+            "conclusion_banner_url": conclusion_banner_url if banner_config and banner_config.include_banner else None,
+            "dual_banners_enabled": banner_config.include_banner if banner_config else False,
+        }
+
+    def get_supported_models(self) -> list[str]:
+        return self.ai_service.get_supported_models()
+
+    # ------------------------------------------------------------------
+    # Private — content generation
+    # ------------------------------------------------------------------
+
+    async def _generate_readme_content(
+        self,
+        repo_info: Dict,
+        summary_str: str,
+        tree_str: str,
+        gitingest_content: str,
+        metadata: ProjectMetadata,
+        header_banner_url: Optional[str] = None,
+        conclusion_banner_url: Optional[str] = None,
+    ) -> str:
+        """Build the AI prompt and call the AI service."""
+        project_name = repo_info["repo"]
+        github_url = repo_info["url"]
+
+        log.info("📝 Preparing content for AI prompt…")
+        prep_start = time.time()
+
+        # Isolate existing readme if possible
+        import re
+        existing_readme_content = ""
+        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
+            if not block.strip():
+                continue
+            parts = block.split("\n" + "="*48 + "\n", 1)
+            if len(parts) == 2:
+                file_path, file_body = parts[0].strip(), parts[1].strip()
+                if os.path.basename(file_path).lower() in ("readme.md", "readme.txt", "readme"):
+                    existing_readme_content = file_body[:2000]
+                    break
+
+        # Truncate content to avoid blowing out 32k context limits
+        # Qwen 2.5 32B Coder has 32k tokens, 1 token ~ 4 chars. Safe limit = ~100k chars for code alone.
+        MAX_CHARS = 100_000
+        truncated_content = gitingest_content[:MAX_CHARS]
+        if len(gitingest_content) > MAX_CHARS:
+            truncated_content += "\n\n... [TRUNCATED] ..."
+
+        # Format perfectly for AI
+        file_contents = f"--- REPOSITORY SUMMARY ---\n{summary_str}\n\n--- DIRECTORY TREE ---\n{tree_str}\n\n--- FILE CONTENTS ---\n{truncated_content}"
+
+        ai_prompt = self._build_prompt(
+            project_name,
+            github_url,
+            file_contents,
+            existing_readme_content,
+            metadata,
+            header_banner_url,
+            conclusion_banner_url,
+        )
+
+        log.info(
+            "✅ Prompt ready in %.2fs  (%d chars)",
+            time.time() - prep_start,
+            len(ai_prompt),
+        )
 
         try:
-            print(f"🤖 Generating README with single API call...")
-            generation_start = time.time()
-            
-            generated_readme = self.ai_service.generate_readme(ai_prompt)
-            
-            generation_time = round(time.time() - generation_start, 2)
-            print(f"✅ Generated README in {generation_time}s: {len(generated_readme):,} characters")
-            return generated_readme
+            log.info("🤖 Sending prompt to %s…", self.ai_service.get_supported_models()[0])
+            gen_start = time.time()
+            result = await self.ai_service.generate_readme(ai_prompt)
+            log.info(
+                "✅ README generated in %.2fs  (%d chars)",
+                time.time() - gen_start,
+                len(result),
+            )
+            return result
+        except Exception as exc:
+            log.error("❌ AI generation failed: %s", exc)
+            return self._create_fallback_readme(
+                project_name, github_url, header_banner_url, conclusion_banner_url
+            )
 
-        except Exception as e:
-            print(f"❌ AI generation failed: {e}")
-            return self._create_fallback_readme(project_name, github_url, header_banner_url, conclusion_banner_url)
-    
-    def _create_ai_prompt_optimized(self, project_name: str, github_url: str, 
-                                  file_contents: str, existing_readme: str, 
-                                  metadata: ProjectMetadata, header_banner_url: str = None, 
-                                  conclusion_banner_url: str = None) -> str:
-        """Create optimized AI prompt with dual banners"""
-        
-        # 🎨 DUAL Banner section for prompt
-        banner_instruction = ""
-        if header_banner_url or conclusion_banner_url:
-            banner_instruction = f"""
-🎨 DUAL PROFESSIONAL BANNERS:
+    # ------------------------------------------------------------------
+    # Private — prompt construction
+    # ------------------------------------------------------------------
 
-HEADER BANNER (START OF README):
-{f"Include this SICK Capsule Render banner at the very top:" if header_banner_url else "No header banner"}
-{f"![Header]({header_banner_url})" if header_banner_url else ""}
+    def _build_prompt(
+        self,
+        project_name: str,
+        github_url: str,
+        file_contents: str,
+        existing_readme: str,
+        metadata: ProjectMetadata,
+        header_banner_url: Optional[str] = None,
+        conclusion_banner_url: Optional[str] = None,
+    ) -> str:
+        """Construct the optimised AI prompt using advanced prompt engineering patterns."""
 
-CONCLUSION BANNER (END OF README):
-{f"Include this animated typing conclusion banner at the very end:" if conclusion_banner_url else "No conclusion banner"}
-{f"![Conclusion]({conclusion_banner_url})" if conclusion_banner_url else ""}
+        # 1. System/Role Context
+        system_context = (
+            "You are an elite developer experience (DX) engineer, technical writer, and open-source maintainer. "
+            "Your documentation is globally recognized for being clean, visually stunning, scannable, and perfectly accurate. "
+            "You expertly balance the needs of absolute beginners with those of senior engineers looking for deep architectural facts."
+        )
 
-Banner Features:
-- Header: Professional {metadata.primary_language} waving banner with emojis
-- Conclusion: Animated typing effect with JetBrains Mono font
-- Both optimized for GitHub dark theme
-- Language-specific color schemes
+        # 2. Design Constraints
+        banners_section = """
+### DESIGN CONSTRAINTS:
+Do NOT include any external images, banners, or decorative SVGs. We want a clean, minimalist, highly professional look focused purely on the technical content.
+"""
+
+        # 3. Instruction & Constraints
+        instructions = """
+### CORE INSTRUCTIONS:
+Read the provided source code files and extract the essential architectural patterns, features, and usage rules. 
+Write a masterclass README.md tailored exactly to the project's complexity and tech stack.
+
+### CRITICAL REQUIREMENTS:
+1. **Audience-First**: Identify the CORE project purpose. Why does this exist? State it clearly in the first paragraph.
+2. **Scannability**: Use clean markdown structure: H1 -> H2 -> H3. Use bolding for emphasis, but sparingly.
+3. **No Fluff**: Do NOT pad the document with generic filler text or overly enthusiastic marketing speak. Be a confident, concise engineer.
+4. **Accuracy First**: Only document features, dependencies, or installation steps that are explicitly verifiable in the provided code. If you guess, it breaks user trust. 
+5. **Practical Examples**: Focus on the 80% use case. Do NOT write verbose troubleshoot sections for extreme edge cases.
+6. **Code Blocks**: Always specify the language for code blocks (e.g. ````python`, ````bash`).
+7. **No Output Wrapping**: Do NOT wrap your final README output in ```markdown ... ``` code blocks. Output raw markdown. Do NOT prepend "### README.md".
+8. **Professional Header**: Since we are not using generic image banners, you MUST start the document with a beautifully formatted Markdown Title (`# Project Name`), a 1-sentence tagline, and a row of 4-6 shield.io styling badges representing the core tech stack exactly accurately.
+
+### REASONING PROCESS (Chain of Thought):
+Before generating the final README, please write a brief reasoning block where you identify:
+1. The project's core value proposition.
+2. The primary target audience.
+3. The top 3 features to highlight.
+4. Any complex installation/setup steps that need simplifying.
+You MUST wrap this exact block in `<scratchpad>` and `</scratchpad>` XML tags. Do NOT use markdown headers like `### <scratchpad>`.
+
+### REQUIRED STRUCTURE (After the scratchpad):
+1. **Title & Tagline**: A single clear sentence explaining what the project is.
+2. **Badges**: 4-6 badges showing the core tech stack exactly accurately.
+3. **Overview**: Brief but compelling project overview.
+4. **Key Features**: The top 3-5 features (as bullet points with brief explanations).
+5. **Quick Start Guide**: Get developers running in under 3 minutes.
+6. **Architecture**: A deep, highly technical breakdown of the system design. Do NOT write generic filler like "Built with Spring Boot and JPA". Instead, explain the actual core domain models, how data flows through the application, the structure of the API/Database layers, and any advanced architectural choices (e.g., WebSocket pipelines, JWT auth flows, design patterns used). Use bullet points for readability.
+7. **License & Contributing**: Brief standard clauses.
 """
         
-        return f"""You are a world-class technical documentation specialist, markdown perfectionist, and UI/UX expert who creates README files that are both visually stunning and technically comprehensive. Your documentation is legendary for being accessible to beginners while impressing senior developers.
+        # 4. Input Context
+        input_data = f"""
+### INPUT DATA:
+**Project Name**: {project_name}
+**Repository**: {github_url}
+**Detected Primary Language**: {metadata.primary_language}
 
-PROJECT: {project_name}
-REPOSITORY: {github_url}
-{banner_instruction}
+**EXISTING README.md** (Draw inspiration from this if useful, but adapt it to the new standards):
+<existing_readme>
+{existing_readme[:2_000] if existing_readme else "No existing README found"}
+</existing_readme>
 
-PROJECT FILES FOR ANALYSIS:
+**PROJECT FILES**:
+<source_code>
 {file_contents}
+</source_code>
 
-EXISTING README (USE AS REFERENCE AND EXTRACT USEFUL INFO):
-{existing_readme[:1000] if existing_readme else "No existing README found"}
+Now, take a deep breath, write your `<scratchpad>`, and then generate the ultimate README.md.
+"""
 
-🎯 MISSION: Create a FOCUSED, IMPACTFUL README that highlights the ESSENTIAL information developers need - comprehensive but not overwhelming.
+        # Assemble the full optimized prompt template
+        return f"{system_context}\n\n{banners_section}\n\n{instructions}\n\n{input_data}"
 
-📋 CRITICAL ANALYSIS REQUIREMENTS:
-1. DEEPLY ANALYZE THE SOURCE CODE FILES - extract key architectural patterns and main features
-2. If existing README contains valuable information, incorporate the BEST parts only
-3. Identify the CORE project purpose, target audience, and primary use cases
-4. Document the TOP 3-5 features that matter most to users
-5. Extract ESSENTIAL technologies and dependencies (not every single package)
-6. Create CLEAR, ACTIONABLE installation steps (skip obvious details)
-7. Document MAIN API endpoints or key functions (not every method)
-8. Focus on PRACTICAL usage examples that developers actually need
-9. Write with confidence but stay CONCISE and SCANNABLE
+    # ------------------------------------------------------------------
+    # Private — metadata analysis (heuristic, no AI call)
+    # ------------------------------------------------------------------
 
-🎨 VISUAL EXCELLENCE & SMART PRESENTATION:
+    def _analyze_project_metadata(
+        self, source_files: Dict, repo_structure: List
+    ) -> ProjectMetadata:
+        """Detect language, framework, and project type from file contents."""
 
-**FOCUSED HEADER DESIGN:**
-{f"- START with the professional Capsule Render banner provided above" if header_banner_url else "- Create a clean, impactful header"}
-- ONE compelling tagline that instantly communicates value
-- 4-6 essential badges that tell the core tech story
-- Clean visual hierarchy without excessive decoration
-{f"- END with the animated typing conclusion banner for perfect closure" if conclusion_banner_url else ""}
-
-**SMART CONTENT STRUCTURE:**
-- Every section should serve a clear, essential purpose
-- Use progressive disclosure - start with what matters most
-- Prioritize ACTIONABLE information over lengthy explanations
-- Keep descriptions concise but informative
-
-**ESSENTIAL SECTIONS ONLY:**
-- Brief but compelling project overview
-- Key features (top 3-5 only)
-- Quick start guide (essential steps only)
-- Main usage examples
-- Contributing guidelines (if no CONTRIBUTING.md)
-- Essential links and contact info
-
-**AVOID THESE COMMON BLOAT PATTERNS:**
-- Excessive feature lists with minor details
-- Overly detailed architecture explanations
-- Long technology justifications
-- Redundant installation methods
-- Too many code examples for the same concept
-- Verbose troubleshooting sections for edge cases
-
-🏗️ FOCUSED TECHNICAL CONTENT:
-
-**ESSENTIAL ARCHITECTURE:**
-- Identify the main architectural pattern in 1-2 sentences
-- Explain WHY this pattern was chosen (benefits only)
-- Skip detailed component interactions unless critical
-
-**SMART TECHNOLOGY PRESENTATION:**
-- Present the core tech stack as a simple, scannable list
-- Explain technology choices ONLY if they're unique or important
-- Use clean presentation (avoid overwhelming tables)
-
-**PRACTICAL FEATURE DOCUMENTATION:**
-- Present features as clear user benefits
-- Use 1-2 realistic examples per major feature
-- Focus on the 80% use case, not edge cases
-- Show progression from basic to advanced ONLY if necessary
-
-**STREAMLINED DEVELOPER EXPERIENCE:**
-- **Prerequisites**: Essential requirements only with versions
-- **Quick Start**: Get developers running in under 3 minutes
-- **Configuration**: Most important options with brief explanations
-- **Testing**: How to verify it works (keep it simple)
-
-**CONCLUSION EXCELLENCE:**
-Every README should end with a brief, inspiring conclusion that includes:
-- What makes this project valuable (1-2 sentences)
-- Clear next steps for users
-- Simple contribution guidelines
-- Essential contact information
-
-**CRITICAL QUALITY STANDARDS:**
-- Only reference files that actually exist in the analyzed source code
-- Every code example must be accurate and runnable
-- All installation steps must be tested and verified
-- Technical explanations must be both accurate and accessible
-- Visual elements must enhance, not distract from, the content
-
-🎯 SUCCESS CRITERIA - CREATE A README THAT:
-- Makes developers immediately understand the project's value
-- Provides essential information without overwhelming detail
-- Is scannable and easy to navigate quickly
-- Focuses on practical, actionable content
-- Balances professionalism with accessibility
-- Gets developers up and running fast
-- Highlights what matters most, skips what doesn't
-
-IMPORTANT: After generating this focused README, add metadata in this EXACT format:
-
----METADATA---
-PRIMARY_LANGUAGE: [detected primary programming language]
-PROJECT_TYPE: [web_app|mobile_app|api|library|cli_tool|desktop_app|data_science|game|other]
-TECH_STACK: [comma-separated list of main technologies/frameworks]
-FRAMEWORKS: [comma-separated list of frameworks detected]
----END_METADATA---
-
-Generate a README that sets the gold standard for technical documentation - visually stunning, technically comprehensive, and accessible to all! 🚀✨"""
-    def _analyze_project_metadata(self, source_files: Dict, repo_structure: List) -> ProjectMetadata:
-        """🔍 Analyze project files to extract metadata for banner generation"""
-        
-        # Detect primary language
-        language_counts = {}
-        for file_path in source_files.keys():
+        # --- Language detection ---
+        lang_counts: Dict[str, int] = {}
+        ext_map = {
+            ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript",
+            ".ts": "TypeScript", ".tsx": "TypeScript", ".java": "Java",
+            ".go": "Go", ".rs": "Rust", ".cpp": "C++", ".cc": "C++",
+            ".cxx": "C++", ".kt": "Kotlin", ".swift": "Swift",
+            ".dart": "Dart", ".rb": "Ruby", ".cs": "C#",
+        }
+        for file_path in source_files:
             ext = os.path.splitext(file_path)[1].lower()
-            if ext == '.py':
-                language_counts['Python'] = language_counts.get('Python', 0) + 1
-            elif ext in ['.js', '.jsx']:
-                language_counts['JavaScript'] = language_counts.get('JavaScript', 0) + 1
-            elif ext in ['.ts', '.tsx']:
-                language_counts['TypeScript'] = language_counts.get('TypeScript', 0) + 1
-            elif ext == '.java':
-                language_counts['Java'] = language_counts.get('Java', 0) + 1
-            elif ext == '.go':
-                language_counts['Go'] = language_counts.get('Go', 0) + 1
-            elif ext in ['.cpp', '.cc', '.cxx']:
-                language_counts['C++'] = language_counts.get('C++', 0) + 1
-            elif ext == '.rs':
-                language_counts['Rust'] = language_counts.get('Rust', 0) + 1
-        
-        primary_language = max(language_counts, key=language_counts.get) if language_counts else 'Unknown'
-        
-        # Detect tech stack and frameworks
-        tech_stack = []
-        frameworks = []
-        
-        # Check for common files and dependencies
+            if lang := ext_map.get(ext):
+                lang_counts[lang] = lang_counts.get(lang, 0) + 1
+
+        primary_language = max(lang_counts, key=lang_counts.get) if lang_counts else "Unknown"
+
+        # --- Framework / tech-stack detection ---
+        tech_stack: List[str] = []
+        frameworks: List[str] = []
+
+        python_markers = {
+            "fastapi": "FastAPI", "django": "Django",
+            "flask": "Flask", "streamlit": "Streamlit",
+        }
+        js_markers = {
+            "react": "React", "vue": "Vue.js", "angular": "Angular",
+            "express": "Express.js", "next": "Next.js",
+        }
+
         for file_path, content in source_files.items():
             file_name = os.path.basename(file_path).lower()
-            
-            # Python ecosystem
-            if file_name in ['requirements.txt', 'pyproject.toml', 'setup.py']:
-                if 'fastapi' in content.lower():
-                    tech_stack.append('FastAPI')
-                    frameworks.append('FastAPI')
-                if 'django' in content.lower():
-                    tech_stack.append('Django')
-                    frameworks.append('Django')
-                if 'flask' in content.lower():
-                    tech_stack.append('Flask')
-                    frameworks.append('Flask')
-                if 'streamlit' in content.lower():
-                    tech_stack.append('Streamlit')
-                    frameworks.append('Streamlit')
-            
-            # JavaScript/Node ecosystem
-            elif file_name == 'package.json':
-                if 'react' in content.lower():
-                    tech_stack.append('React')
-                    frameworks.append('React')
-                if 'vue' in content.lower():
-                    tech_stack.append('Vue.js')
-                    frameworks.append('Vue.js')
-                if 'angular' in content.lower():
-                    tech_stack.append('Angular')
-                    frameworks.append('Angular')
-                if 'express' in content.lower():
-                    tech_stack.append('Express.js')
-                    frameworks.append('Express.js')
-                if 'next' in content.lower():
-                    tech_stack.append('Next.js')
-                    frameworks.append('Next.js')
-        
-        # Add primary language to tech stack if not already there
+            content_lower = content.lower()
+
+            if file_name in ("requirements.txt", "pyproject.toml", "setup.py"):
+                for keyword, label in python_markers.items():
+                    if keyword in content_lower and label not in frameworks:
+                        tech_stack.append(label)
+                        frameworks.append(label)
+
+            elif file_name == "package.json":
+                for keyword, label in js_markers.items():
+                    if keyword in content_lower and label not in frameworks:
+                        tech_stack.append(label)
+                        frameworks.append(label)
+
         if primary_language not in tech_stack:
             tech_stack.insert(0, primary_language)
-        
-        # Determine project type
-        project_type = 'library'  # default
-        if any('main.py' in f or 'app.py' in f or 'server.py' in f for f in source_files.keys()):
-            if 'FastAPI' in frameworks or 'Flask' in frameworks or 'Django' in frameworks:
-                project_type = 'api'
-            else:
-                project_type = 'cli_tool'
-        elif any('index.html' in f or 'app.js' in f for f in source_files.keys()):
-            project_type = 'web_app'
-        elif 'React' in frameworks or 'Vue.js' in frameworks or 'Angular' in frameworks:
-            project_type = 'web_app'
-        
+
+        # --- Project type ---
+        project_type = "library"
+        entry_points = {"main.py", "app.py", "server.py"}
+        if any(os.path.basename(f) in entry_points for f in source_files):
+            project_type = (
+                "api"
+                if any(fw in frameworks for fw in ("FastAPI", "Flask", "Django"))
+                else "cli_tool"
+            )
+        elif any(
+            os.path.basename(f) in ("index.html", "app.js") for f in source_files
+        ):
+            project_type = "web_app"
+        elif any(fw in frameworks for fw in ("React", "Vue.js", "Angular", "Next.js")):
+            project_type = "web_app"
+
         return ProjectMetadata(
             primary_language=primary_language,
             project_type=project_type,
-            tech_stack=tech_stack[:5],  # Limit to top 5
-            frameworks=frameworks[:3]   # Limit to top 3
+            tech_stack=tech_stack[:5],
+            frameworks=frameworks[:3],
         )
-    
-    def _create_fallback_readme(self, repo_name: str, repo_url: str, header_banner_url: str = None, conclusion_banner_url: str = None) -> str:
-        """Create a basic fallback README with dual banners"""
-        
-        header_section = f"![Header]({header_banner_url})\n\n" if header_banner_url else ""
-        conclusion_section = f"\n\n![Conclusion]({conclusion_banner_url})" if conclusion_banner_url else ""
-        
-        return f"""{header_section}# {repo_name}
+
+    # ------------------------------------------------------------------
+    # Private — content utilities
+    # ------------------------------------------------------------------
+
+    def _clean_readme_content(self, readme_content: str) -> str:
+        """Strip the AI-appended <scratchpad> block, markdown fences, and legacy formatting."""
+        content = readme_content.strip()
+
+        # 1. Safely remove scratchpad block entirely
+        if "<scratchpad>" in content:
+            start = content.find("<scratchpad>")
+            
+            # Find the end of the scratchpad
+            if "</scratchpad>" in content:
+                end = content.find("</scratchpad>") + len("</scratchpad>")
+            else:
+                # Fallback: if AI forgot the closing tag, try to find the start of the README
+                fallback_end = content.find("### README.md", start)
+                if fallback_end == -1:
+                    fallback_end = content.find("## README.md", start)
+                if fallback_end == -1:
+                    fallback_end = content.find("![Header]", start)
+                if fallback_end == -1:  # Absolute worst case, just cut 500 chars (unlikely to hit)
+                    fallback_end = min(start + 500, len(content))
+                end = fallback_end
+
+            # we also want to remove `### ` if it precedes the scratchpad
+            pre_start = content.rfind("### ", 0, start)
+            if pre_start != -1 and pre_start >= start - 15:
+                start = pre_start
+                
+            content = content[:start] + content[end:]
+            content = content.strip()
+
+        # 2. Remove "### README.md" if AI hallucinated it out of habit
+        if content.startswith("### README.md"):
+            content = content[len("### README.md"):].strip()
+        elif content.startswith("## README.md"):
+            content = content[len("## README.md"):].strip()
+        elif content.startswith("# README.md"):
+            content = content[len("# README.md"):].strip()
+
+        # 3. Strip global ```markdown ... ``` wrapper
+        if content.startswith("```markdown") and content.endswith("```"):
+            content = content[len("```markdown"):].strip()
+            content = content[:-3].strip()
+
+        # Legacy fallback if it still generates metadata
+        if "---METADATA---" in content:
+            content = content[: content.find("---METADATA---")].strip()
+            
+        return content
+
+    def _create_fallback_readme(
+        self,
+        repo_name: str,
+        repo_url: str,
+        header_banner_url: Optional[str] = None,
+        conclusion_banner_url: Optional[str] = None,
+    ) -> str:
+        """Minimal README used when AI generation is unavailable."""
+        header = f"![Header]({header_banner_url})\n\n" if header_banner_url else ""
+        conclusion = f"\n\n![Conclusion]({conclusion_banner_url})" if conclusion_banner_url else ""
+
+        return f"""{header}# {repo_name}
 
 A project hosted at {repo_url}
 
 ## About
 
-This project is currently being analyzed. Please check back later for a comprehensive README.
+This project is currently being analysed. Please check back later for a comprehensive README.
 
 ## Quick Start
 
@@ -411,311 +454,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-Please check the repository for license information.{conclusion_section}
+Please check the repository for licence information.{conclusion}
 """
-
-    def _create_ai_prompt_legacy(self, project_name: str, github_url: str, file_contents: str, existing_readme: str) -> str:
-        """Create the AI prompt for README generation"""
-        return f"""You are a senior technical documentation specialist, Best UI/UX Designer of the year who's known for paying attention to smallest details, a perfectionist in design and drafting, and software architect creating enterprise-grade README documentation.
-
-PROJECT: {project_name}
-REPOSITORY: {github_url}
-
-SOURCE CODE AND PROJECT FILES FOR ANALYSIS:
-{file_contents}
-
-EXISTING README (USE AS REFERENCE AND EXTRACT USEFUL INFO):
-{existing_readme[:500] if existing_readme else "No existing README found"}
-
-🎯 MISSION: Create a COMPREHENSIVE, PROFESSIONAL README that demonstrates deep technical understanding and enterprise-level documentation standards.
-
-📋 CRITICAL ANALYSIS REQUIREMENTS:
-1. DEEPLY ANALYZE THE SOURCE CODE FILES - extract architectural patterns, design decisions
-2. If existing README contains valuable information (setup steps, configuration details, project description), incorporate and enhance it
-3. Identify the ACTUAL project purpose, target audience, and use cases from code structure AND existing documentation
-4. Document REAL features with technical depth - combine code analysis with existing documentation insights
-3. Document REAL features with technical depth - not just surface-level descriptions
-4. Extract ACTUAL technologies, versions, and dependencies from package/build files
-5. Create ACCURATE, step-by-step installation with prerequisites and troubleshooting
-6. Document REAL API endpoints, functions, classes, and capabilities found in source
-7. Identify architectural patterns (MVVM, MVP, Clean Architecture, etc.) from code structure
-8. Extract SDK versions, minimum requirements, and platform specifics from build files
-9. Write as the project owner - use confident, narrative voice
-10. Distinguish frameworks correctly (NextJS vs React, Jetpack Compose vs Views, Flutter vs Native, etc.)
-11. Identify UI libraries (shadcn/ui, Material Design, Cupertino, etc.) from dependencies
-
-🏗️ TECHNICAL DEPTH REQUIREMENTS:
-
-**ARCHITECTURE ANALYSIS:**
-- Identify and document the architectural pattern used (MVVM, Clean Architecture, BLoC, Provider, etc.)
-- Extract project structure and explain key directories/modules
-- Document data flow and state management patterns
-- Identify dependency injection, navigation patterns, routing
-
-**TECHNOLOGY STACK ANALYSIS:**
-- Extract MAIN technologies only (React, Flutter, Spring Boot, etc.) - NOT every dependency
-- Focus on PRIMARY frameworks and platforms, not utility libraries
-- Distinguish between core tech stack vs development dependencies
-- For mobile: Focus on platform (Android/iOS), main framework (Flutter/Native), key libraries only
-
-**FEATURE DOCUMENTATION:**
-- Document features based on actual UI screens/components found
-- Explain authentication flows, data persistence, networking
-- Document any background services, notifications, or integrations
-- Include configuration options and customization capabilities
-- For mobile apps: Document platform-specific features, permissions
-
-🎨 PROFESSIONAL PRESENTATION REQUIREMENTS:
-
-**VISUAL IMPACT & POLISH:**
-- Create a stunning header with perfect badge alignment and visual hierarchy
-- Use strategic spacing, dividers, and HTML elements for maximum visual appeal
-- Include eye-catching emojis that enhance readability without being overwhelming
-- Create a cohesive color scheme through badge selection and formatting
-- Make every section visually distinct and scannable
-
-**TECH STACK PRESENTATION:**
-- Show ONLY main technologies (React, Flutter, Node.js, MongoDB, etc.)
-- Avoid listing utility dependencies, dev tools, or minor libraries
-- Focus on what matters to developers evaluating the project
-- Use beautiful, consistent badge styling for main tech stack
-
-**CONTENT STRUCTURE:**
-- Every section should feel purposeful and well-crafted
-- Include smooth transitions between sections
-- End with a compelling conclusion that ties everything together
-- Make the README feel like a complete, polished document
-
-**VISUAL HIERARCHY:**
-- Use HTML elements strategically: <div align="center">, <details>, <summary>, <kbd>
-- Create comprehensive badge collection with shields.io (technology, license, platform support)
-- Strategic emoji usage for navigation and visual appeal
-- Professional typography with proper heading hierarchy
-
-**DEVELOPER EXPERIENCE:**
-- **Prerequisites section** with exact requirements (Android Studio, Xcode, Flutter SDK versions, etc.)
-- **Step-by-step setup** with actual commands and file paths
-- **Configuration examples** with code snippets and file locations
-- **Project structure diagram** showing key directories and their purposes
-- **Testing instructions** and development workflow
-- **Troubleshooting section** with common issues and solutions
-
-**PLATFORM-SPECIFIC SECTIONS:**
-
-**For Android Projects:**
-- System requirements (API levels, RAM, storage)
-- Build variants and flavors
-- Signing configuration
-- ProGuard/R8 configuration
-- Testing strategy (Unit, UI, Integration)
-- Performance considerations
-
-**For iOS Projects:**
-- iOS deployment target and device compatibility
-- Xcode version requirements
-- Provisioning profiles and certificates
-- App Store submission guidelines
-- TestFlight distribution
-
-**For Flutter Projects:**
-- Flutter SDK version compatibility
-- Platform-specific setup (Android Studio, Xcode)
-- State management approach (BLoC, Provider, Riverpod, etc.)
-- Platform channels and native integrations
-- Build configurations for both platforms
-
-**For Web Projects:**
-- Browser compatibility
-- Environment variables and configuration
-- Deployment strategies
-- Performance metrics
-- SEO considerations
-
-**INTERACTIVE ELEMENTS:**
-- Collapsible Table of Contents with anchor links
-- Expandable sections for advanced configurations
-- Code blocks with syntax highlighting and copy indicators
-- HTML tables for compatibility matrices and feature comparisons
-
-**PROFESSIONAL FORMATTING EXAMPLES:**
-```html
-<div align="center">
-  <h1>🚀 {project_name}</h1>
-  <p><em>Compelling tagline that hooks developers instantly</em></p>
-  
-  <!-- MAIN TECH STACK ONLY - Beautiful, consistent badges -->
-  <img src="https://img.shields.io/badge/Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white" alt="Flutter">
-  <img src="https://img.shields.io/badge/Firebase-FFCA28?style=for-the-badge&logo=firebase&logoColor=black" alt="Firebase">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License">
-  
-  <br><br>
-  
-  <!-- Quick action buttons -->
-  <a href="#installation">🚀 Get Started</a> •
-  <a href="#features">✨ Features</a> •
-  <a href="#demo">📱 Demo</a>
-</div>
-
-<hr>
-```
-
-**SMART LINKING REQUIREMENTS:**
-- ONLY link to files that actually exist in the repository
-- Check the source code analysis for existing files before creating links
-- If CONTRIBUTING.md doesn't exist, provide inline contribution guidelines
-- If LICENSE file doesn't exist, mention license type without linking
-- Don't reference non-existent documentation files
-- Create self-contained README that doesn't depend on missing files
-
-**CONCLUSION SECTION REQUIREMENT:**
-Every README MUST end with a compelling conclusion that includes:
-- Summary of what makes this project special
-- Call-to-action for contributors or users (inline guidelines if no CONTRIBUTING.md)
-- Professional sign-off with available contact information only
-- Thank you note to the community
-- Future vision or roadmap teaser
-
-Example conclusion format (adapt based on what files actually exist):
-```markdown
----
-
-## 🎉 Conclusion
-
-[Project Name] represents [key value proposition]. Built with [main technologies], it offers [primary benefits] for [target audience].
-
-### 🌟 What's Next?
-- [ ] Upcoming feature roadmap items
-- [ ] Community contributions welcome
-- [ ] Feedback and suggestions appreciated
-
-### 🤝 Contributing
-We welcome contributions! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-### 📞 Support & Contact
-- 🐛 Issues: Report bugs via GitHub Issues
-- 💬 Questions: Open a discussion or issue
-
----
-
-<div align="center">
-  <strong>⭐ Star this repo if you find it helpful!</strong>
-  <br>
-  <em>Made with ❤️ for the developer community</em>
-</div>
-```
-
-**CRITICAL RULE: Only reference files that exist in the analyzed source code!**
-
-**QUALITY INDICATORS:**
-- Include testing section (shows project maturity)
-- Document contribution guidelines
-- Explain project structure and architecture
-- Provide troubleshooting and FAQ sections
-- Include performance considerations and best practices
-
-🎯 SUCCESS CRITERIA:
-Create a README that makes senior developers think:
-- "This is a well-architected, professional project"
-- "The documentation shows deep technical understanding"
-- "I can quickly assess if this fits my needs"
-- "The setup instructions will actually work"
-- "This team knows what they're doing"
-
-IMPORTANT: After generating the README, add a metadata section at the very end in this EXACT format:
-
----METADATA---
-PRIMARY_LANGUAGE: [detected primary programming language like Python, JavaScript, TypeScript, Java, Go, Kotlin, Dart, Swift, etc.]
-PROJECT_TYPE: [web_app|mobile_app|api|library|cli_tool|desktop_app|data_science|game|other]
-TECH_STACK: [comma-separated list of main technologies/frameworks like React, Node.js, Express, MongoDB, Flutter, Android, iOS, etc.]
-FRAMEWORKS: [comma-separated list of frameworks detected like Next.js, Django, Flask, Spring Boot, Flutter, React Native, etc.]
----END_METADATA---
-
-Generate a README that demonstrates MASTERY of both the technology and documentation craft! 🚀"""
-
-    def _extract_metadata(self, readme_content: str) -> ProjectMetadata:
-        """Extract metadata from README content"""
-        try:
-            if '---METADATA---' in readme_content and '---END_METADATA---' in readme_content:
-                metadata_start = readme_content.find('---METADATA---') + len('---METADATA---')
-                metadata_end = readme_content.find('---END_METADATA---')
-                metadata_section = readme_content[metadata_start:metadata_end].strip()
-
-                metadata_dict = {
-                    'primary_language': 'Unknown',
-                    'project_type': 'other',
-                    'tech_stack': [],
-                    'frameworks': []
-                }
-
-                for line in metadata_section.split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        key = key.strip()
-                        value = value.strip()
-
-                        if key == 'PRIMARY_LANGUAGE':
-                            metadata_dict['primary_language'] = value
-                        elif key == 'PROJECT_TYPE':
-                            metadata_dict['project_type'] = value
-                        elif key == 'TECH_STACK':
-                            metadata_dict['tech_stack'] = [tech.strip() for tech in value.split(',') if tech.strip()]
-                        elif key == 'FRAMEWORKS':
-                            metadata_dict['frameworks'] = [fw.strip() for fw in value.split(',') if fw.strip()]
-
-                return ProjectMetadata(**metadata_dict)
-
-            # Fallback to defaults
-            return ProjectMetadata(
-                primary_language='Unknown',
-                project_type='other',
-                tech_stack=[],
-                frameworks=[]
-            )
-
-        except Exception as e:
-            print(f"❌ Error extracting metadata: {e}")
-            return ProjectMetadata(
-                primary_language='Unknown',
-                project_type='other',
-                tech_stack=[],
-                frameworks=[]
-            )
-
-    def _clean_readme_content(self, readme_content: str) -> str:
-        """Remove metadata section from README content"""
-        if '---METADATA---' in readme_content:
-            return readme_content[:readme_content.find('---METADATA---')].strip()
-        return readme_content
-
-    def _create_fallback_readme(self, project_name: str, github_url: str) -> str:
-        """Create fallback README when AI generation fails"""
-        return f"""# {project_name}
-
-A project hosted at {github_url}
-
-## About
-This project requires further analysis to generate comprehensive documentation.
-
-## Repository
-- **Source**: {github_url}
-- **Analysis**: Basic fallback documentation
-- **AI Model**: Gemini 2.5 Flash (Optimized with File Summarization)
-
-## Next Steps
-Please ensure the repository contains analyzable source code files for better documentation generation.
-
----METADATA---
-PRIMARY_LANGUAGE: Unknown
-PROJECT_TYPE: other
-TECH_STACK: 
-FRAMEWORKS: 
----END_METADATA---
-"""
-
-    def get_supported_models(self) -> list:
-        """Get list of supported AI models"""
-        return ['gemini-2.5-flash']
