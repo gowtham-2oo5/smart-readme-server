@@ -1,27 +1,19 @@
 import logging
 import httpx
-from abc import ABC, abstractmethod
 
 from config import settings
 
 log = logging.getLogger(__name__)
 
 
-class AIProvider(ABC):
-    """Abstract contract for AI providers."""
+class AIService:
+    """NVIDIA API provider for the configured AI model."""
 
-    @abstractmethod
-    async def generate_readme(self, prompt: str) -> str:
-        pass
-
-
-class NvidiaProvider(AIProvider):
-    """NVIDIA API provider for open-source models (Llama, Qwen, Mixtral, etc.)."""
-
-    def __init__(self, model_version: str = "qwen/qwen2.5-coder-32b-instruct"):
+    def __init__(self):
         if not settings.nvidia_api_key:
             raise ValueError("NVIDIA_API_KEY is not set in environment / .env")
-        self.model_version = model_version
+        
+        self.model_version = settings.ai_model
         self.api_key = settings.nvidia_api_key
         self.invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
 
@@ -51,15 +43,5 @@ class NvidiaProvider(AIProvider):
             log.info("Generation complete \u2014 %d chars total", len(response_text))
             return response_text
 
-
-class AIService:
-    """Thin facade over the active AI provider."""
-
-    def __init__(self):
-        self.provider = NvidiaProvider(settings.ai_model)
-
-    async def generate_readme(self, prompt: str) -> str:
-        return await self.provider.generate_readme(prompt)
-
     def get_supported_models(self) -> list[str]:
-        return [settings.ai_model]
+        return [self.model_version]

@@ -28,7 +28,7 @@ class ReadmeService:
     # ------------------------------------------------------------------
 
     async def generate_readme(
-        self, owner: str, repo: str, banner_config: Optional[BannerConfig] = None
+        self, owner: str, repo: str, banner_config: Optional[BannerConfig] = None, tone: str = "professional"
     ) -> Dict:
         """Generate a README for a GitHub repository using gitingest."""
         start_time = time.time()
@@ -99,7 +99,7 @@ class ReadmeService:
 
         # 4. Generate README content via AI
         readme_content = await self._generate_readme_content(
-            repo_info, summary_str, tree_str, gitingest_content, metadata, header_banner_url, conclusion_banner_url
+            repo_info, summary_str, tree_str, gitingest_content, metadata, header_banner_url, conclusion_banner_url, tone
         )
 
         # 5. Strip the AI-appended metadata block and persist
@@ -115,7 +115,7 @@ class ReadmeService:
             "local_file_path": file_path,
             "processing_time": processing_time,
             "files_analyzed": len(source_files),
-            "ai_model_used": "qwen/qwen2.5-coder-32b-instruct",
+            "ai_model_used": settings.ai_model,
             "branch_used": default_branch,
             "metadata": metadata.__dict__,
             "repo_info": repo_info,
@@ -140,6 +140,7 @@ class ReadmeService:
         metadata: ProjectMetadata,
         header_banner_url: Optional[str] = None,
         conclusion_banner_url: Optional[str] = None,
+        tone: str = "professional",
     ) -> str:
         """Build the AI prompt and call the AI service."""
         project_name = repo_info["repo"]
@@ -161,8 +162,8 @@ class ReadmeService:
                     existing_readme_content = file_body[:2000]
                     break
 
-        # Truncate content to avoid blowing out 32k context limits
-        # Qwen 2.5 32B Coder has 32k tokens, 1 token ~ 4 chars. Safe limit = ~100k chars for code alone.
+        # Truncate content to avoid blowing out context limits
+        # E.g. 1 token ~ 4 chars. Safe limit = ~100k chars for code alone for most 32k context window models.
         MAX_CHARS = 100_000
         truncated_content = gitingest_content[:MAX_CHARS]
         if len(gitingest_content) > MAX_CHARS:
@@ -179,6 +180,7 @@ class ReadmeService:
             metadata,
             header_banner_url,
             conclusion_banner_url,
+            tone,
         )
 
         log.info(
@@ -216,13 +218,14 @@ class ReadmeService:
         metadata: ProjectMetadata,
         header_banner_url: Optional[str] = None,
         conclusion_banner_url: Optional[str] = None,
+        tone: str = "professional",
     ) -> str:
         """Construct the optimised AI prompt using advanced prompt engineering patterns."""
 
         # 1. System/Role Context
         system_context = (
             "You are an elite developer experience (DX) engineer, technical writer, and open-source maintainer. "
-            "Your documentation is globally recognized for being clean, visually stunning, scannable, and perfectly accurate. "
+            f"Your documentation is globally recognized for being clean, visually stunning, scannable, perfectly accurate, and written in a **{tone}** tone. "
             "You expertly balance the needs of absolute beginners with those of senior engineers looking for deep architectural facts."
         )
 

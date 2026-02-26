@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="README Generator API",
-    description="Generate comprehensive README files for GitHub repositories using Qwen 2.5 Coder 32B",
+    description=f"Generate comprehensive README files for GitHub repositories using AI ({settings.ai_model})",
     version="2.0.0",
 )
 
@@ -64,7 +64,7 @@ def get_file_service() -> FileService:
 @app.get("/")
 async def root():
     return {
-        "message": "README Generator API — Powered by Qwen 2.5 Coder 32B via NVIDIA API",
+        "message": f"README Generator API — Powered by {settings.ai_model} via NVIDIA API",
         "version": "2.0.0",
         "ai_model": settings.ai_model,
         "features": {
@@ -98,7 +98,7 @@ async def get_models(readme_svc: ReadmeService = Depends(get_readme_service)):
 
 @app.post("/generate-readme", response_model=ReadmeResponse)
 async def generate_readme(request: ReadmeRequest, readme_svc: ReadmeService = Depends(get_readme_service)):
-    """Generate a README for a GitHub repository using Qwen 2.5 Coder 32B."""
+    """Generate a README for a GitHub repository using the configured AI model."""
     try:
         log.info("📥 Received request: %s/%s", request.owner_name, request.repo_name)
 
@@ -114,6 +114,7 @@ async def generate_readme(request: ReadmeRequest, readme_svc: ReadmeService = De
             owner=request.owner_name,
             repo=request.repo_name,
             banner_config=request.banner_config,
+            tone=request.tone,
         )
 
         return ReadmeResponse(success=True, data=result)

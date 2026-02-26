@@ -16,6 +16,7 @@ class ReadmeRequest(BaseModel):
 
     repo_name: str = Field(..., description="Name of the GitHub repository")
     owner_name: str = Field(..., description="Owner of the GitHub repository")
+    tone: str = Field(default="professional", description="Tone of the README (e.g., professional, casual, developer, instructional)")
     banner_config: BannerConfig = Field(default_factory=BannerConfig, description="Banner customization settings")
 
 class ProjectMetadata(BaseModel):
