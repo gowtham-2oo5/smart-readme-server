@@ -1,155 +1,138 @@
-# Smart README Generator - API Documentation 🚀
+# Smart README Generator — API Documentation 🚀
 
-Welcome to the API documentation for the **Smart README Generator**. This guide is designed for the frontend team to understand how to interact with the API, construct properly serialized requests, and configure the visual presentation (banners, fonts, themes, and tone).
-
----
-
-## 🔗 Base URL
-`http://127.0.0.1:8000` (Local Development)
+**Base URL:** `http://127.0.0.1:8000`
 
 ---
 
-## 📚 Endpoints
+## Endpoints Overview
 
-### 1. Generate README (`POST /generate-readme`)
-Generates a comprehensive `README.md` for a given GitHub repository using the specified aesthetic and tonal configurations.
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| `POST` | `/generate-readme` | Generate a README.md |
+| `POST` | `/generate-linkedin` | Generate a LinkedIn announcement post |
+| `POST` | `/generate-article` | Generate a technical article |
+| `POST` | `/generate-resume-points` | Generate resume bullet points (returns JSON) |
+| `GET` | `/banner-options` | List available banner config options |
+| `GET` | `/banner-preview/{owner}/{repo}` | Preview banners (query params: `font`, `theme`, `style`) |
+| `GET` | `/files` | List saved READMEs |
+| `GET` | `/files/{name}` | Read a saved README |
+| `DELETE`| `/files/{name}` | Delete a saved README |
+| `GET` | `/health` | Health check |
+| `GET` | `/models` | List AI models |
 
-**Request Body (`application/json`)**
-The request body perfectly maps to the `ReadmeRequest` Pydantic model.
+---
 
-| Field | Type | Required | Default | Description |
-| ---- | ---- | -------- | ------- | ----------- |
-| `repo_name` | `string` | **Yes** | | The name of the GitHub repository. |
-| `owner_name` | `string` | **Yes** | | The owner (user/organisation) of the repository. |
-| `tone` | `string` | No | `"professional"` | The stylistic tone the AI should use (e.g., `"casual"`, `"developer"`, `"academic"`, `"humorous"`). |
-| `banner_config` | `object` | No | *See below* | Defines the styling of the generated banners. |
+## `POST /generate-readme`
 
-**`banner_config` Object Structure**
-
-| Field | Type | Required | Default | Description |
-| ---- | ---- | -------- | ------- | ----------- |
-| `include_banner` | `boolean` | No | `true` | Whether to include header/conclusion banners. |
-| `font` | `string` | No | `"jetbrains"` | The font family. Valid options: `"jetbrains"`, `"default"`. |
-| `theme` | `string` | No | `"github_dark"` | The color palette. *See Available Themes below.* |
-| `style` | `string` | No | `"professional"` | The banner shape/animation. *See Available Styles below.* |
-| `custom_title` | `string` | No | `null` | Optional explicit title to display in the banner. |
-
-**Example Request:**
 ```json
 {
   "owner_name": "gowtham-2oo5",
-  "repo_name": "smart-readme-server",
-  "tone": "developer",
+  "repo_name": "CRT_Portal-server",
+  "tone": "professional",
   "banner_config": {
     "include_banner": true,
     "font": "jetbrains",
-    "theme": "cyberpunk",
-    "style": "animated"
-  }
-}
-```
-
-**Example Response (`200 OK`)**
-```json
-{
-  "success": true,
-  "data": {
-    "readme_content": "# Smart README\\n...",
-    "readme_length": 5200,
-    "local_file_path": "./generated_readmes/...",
-    "processing_time": 12.4,
-    "files_analyzed": 14,
-    "ai_model_used": "qwen/qwen2.5-coder-32b-instruct",
-    "branch_used": "main",
-    "metadata": {
-      "primary_language": "Python",
-      "project_type": "api",
-      "tech_stack": ["Python", "FastAPI"],
-      "frameworks": ["FastAPI"]
-    },
-    ...
-  }
-}
-```
-
----
-
-### 2. Get Banner Configuration Options (`GET /banner-options`)
-Fetches all supported configurations explicitly from the server instance.
-
-**Example Response (`200 OK`)**
-```json
-{
-  "success": true,
-  "options": {
-    "fonts": {
-      "jetbrains": "JetBrains Mono",
-      "default": "Default Font"
-    },
-    "themes": {
-      "midnight": "0:0f0f23,100:1a1a2e",
-      "cyberpunk": "0:0f3460,100:16213e",
-      "obsidian": "0:1e1e1e,100:2d2d2d",
-      "github_dark": "0:0d1117,100:21262d",
-      "matrix": "0:0a0a0a,100:1a1a1a",
-      "neon": "0:0f0f23,100:1a1a2e",
-      "carbon": "0:161618,100:23252a"
-    },
-    "styles": {
-      "professional": "Multi-line professional banner with tech stack (Soft capsule)",
-      "animated": "Single-line animated banner with neon effects (Waving capsule)",
-      "minimal": "Clean minimal banner with essential info (Rectangular)"
-    }
-  },
-  "defaults": {
-    "font": "jetbrains",
     "theme": "github_dark",
-    "style": "professional"
+    "style": "professional",
+    "custom_title": null
   }
 }
 ```
 
----
+| Field | Default | Notes |
+|-------|---------|-------|
+| `tone` | `"professional"` | Any string: `professional`, `casual`, `developer`, `instructional`, `academic` |
+| `banner_config.theme` | `"github_dark"` | `midnight`, `cyberpunk`, `obsidian`, `github_dark`, `matrix`, `neon`, `carbon` |
+| `banner_config.style` | `"professional"` | `professional` (soft), `animated` (waving), `minimal` (rect) |
+| `banner_config.font` | `"jetbrains"` | `jetbrains`, `default` |
 
-### 3. Preview Banner (`GET /banner-preview/{owner}/{repo}`)
-Returns the banner image URLs and their raw HTML for previewing on the frontend prior to README generation. **Query Parameters** map identically to the `banner_config` options (e.g., `?font=jetbrains&theme=matrix&style=minimal`).
-
----
-
-## 🎨 Configuration Values Reference
-
-### Tones
-The `tone` property accepts a string. Here are highly recommended tones to offer users on the frontend:
-- **`professional`** (Default): Clinical, precise, structured (Great for corporate/enterprise).
-- **`casual`**: Friendly, easy-to-read, using basic analogies.
-- **`developer`**: Highly technical, focused on architecture, patterns, and code configuration.
-- **`instructional`**: Perfect for tutorials or educational repos, very step-by-step focused.
-- **`academic`**: Suitable for research or data-science papers.
-
-### Themes (Color Palettes)
-Pass these text values under `banner_config -> theme`.
-- `midnight`
-- `cyberpunk`
-- `obsidian`
-- `github_dark` (Default)
-- `matrix`
-- `neon`
-- `carbon`
-
-### Styles (Banner Animation/Shape)
-Pass these text values under `banner_config -> style`.
-- `professional`: Traditional rounded (Soft) capsule banner, includes descriptions.
-- `animated`: Waving wave effect at the bottom of the banner. 
-- `minimal`: A strict, clean rectangular banner with no fuss.
-
-### Fonts
-Pass these text values under `banner_config -> font`.
-- `jetbrains`: Recommended. Perfect for code.
-- `default`: Native browser font.
+**Response:** `ReadmeResponse` with `data.readme_content`, `data.processing_time`, `data.metadata`, etc.
 
 ---
 
-## 🛡️ Error Handling
-The API returns straightforward standard HTTP status codes:
-- `422 Unprocessable Entity`: The request body structure or types are invalid (e.g., `owner_name` is missing).
-- `500 Internal Server Error`: Thrown when AI service fails, hitting rate limits, or failing repository pulls. Check the `detail` property in the response body.
+## `POST /generate-linkedin`
+
+```json
+{
+  "owner_name": "gowtham-2oo5",
+  "repo_name": "CRT_Portal-server",
+  "tone": "thought_leader",
+  "focus": "business_value"
+}
+```
+
+| Field | Default | Options |
+|-------|---------|---------|
+| `tone` | `"thought_leader"` | `thought_leader`, `casual`, `technical` |
+| `focus` | `"business_value"` | `business_value`, `technical`, `hiring` |
+
+---
+
+## `POST /generate-article`
+
+```json
+{
+  "owner_name": "gowtham-2oo5",
+  "repo_name": "CRT_Portal-server",
+  "tone": "professional",
+  "article_style": "deep_dive",
+  "target_length": "medium"
+}
+```
+
+| Field | Default | Options |
+|-------|---------|---------|
+| `tone` | `"professional"` | Any string: `professional`, `conversational`, `academic` |
+| `article_style` | `"deep_dive"` | `tutorial`, `deep_dive`, `case_study` |
+| `target_length` | `"medium"` | `short` (800-1.2k words), `medium` (1.5-2.5k), `long` (3-4.5k) |
+
+---
+
+## `POST /generate-resume-points`
+
+```json
+{
+  "owner_name": "gowtham-2oo5",
+  "repo_name": "CRT_Portal-server",
+  "role_target": "Backend Engineer",
+  "num_bullets": 5,
+  "include_metrics": true
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `role_target` | `"Software Engineer"` | Any role string — bullets are tailored to it |
+| `num_bullets` | `5` | Min: 3, Max: 8 |
+| `include_metrics` | `true` | Adds quantifiable metrics to bullets |
+
+**⚠️ Frontend note:** The `content` field is a **JSON string**. Parse it:
+```js
+const parsed = JSON.parse(response.content);
+// parsed.repo_description → "One-liner project summary"
+// parsed.bullets          → ["Bullet 1", "Bullet 2", ...]
+// parsed.skills_demonstrated → ["Java", "Spring Boot", ...]
+```
+
+---
+
+## Response Shapes
+
+**`/generate-readme`** returns `ReadmeResponse`:
+```json
+{ "success": true, "data": { "readme_content": "...", "processing_time": 12.4, ... } }
+```
+
+**`/generate-linkedin`, `/generate-article`, `/generate-resume-points`** return `ContentResponse`:
+```json
+{ "success": true, "content_type": "linkedin", "content": "...", "data": { "processing_time": 8.3, "metadata": { ... } } }
+```
+
+---
+
+## Error Codes
+
+| Code | When |
+|------|------|
+| `422` | Bad request body — missing required fields, invalid enum, `num_bullets` out of range |
+| `500` | AI failure, rate limit hit, repo not found. Check `detail` in response |

@@ -1,5 +1,42 @@
+from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+class ContentType(str, Enum):
+    README = "readme"
+    LINKEDIN = "linkedin"
+    ARTICLE = "article"
+    RESUME = "resume"
+
+
+class LinkedInTone(str, Enum):
+    THOUGHT_LEADER = "thought_leader"
+    CASUAL = "casual"
+    TECHNICAL = "technical"
+
+
+class LinkedInFocus(str, Enum):
+    BUSINESS_VALUE = "business_value"
+    TECHNICAL = "technical"
+    HIRING = "hiring"
+
+
+class ArticleStyle(str, Enum):
+    TUTORIAL = "tutorial"
+    DEEP_DIVE = "deep_dive"
+    CASE_STUDY = "case_study"
+
+
+class ArticleLength(str, Enum):
+    SHORT = "short"
+    MEDIUM = "medium"
+    LONG = "long"
+
 
 class BannerConfig(BaseModel):
     """🎨 Banner configuration for README generation"""
@@ -46,3 +83,50 @@ class GeneratedReadme(BaseModel):
     branch_used: str
     metadata: ProjectMetadata
     repo_info: Dict[str, str]
+
+
+# ---------------------------------------------------------------------------
+# New Content-Type Requests
+# ---------------------------------------------------------------------------
+
+class LinkedInRequest(BaseModel):
+    """Request model for LinkedIn post generation."""
+    model_config = ConfigDict(extra="ignore")
+
+    repo_name: str = Field(..., description="Name of the GitHub repository")
+    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    tone: LinkedInTone = Field(default=LinkedInTone.THOUGHT_LEADER, description="Tone of the LinkedIn post")
+    focus: LinkedInFocus = Field(default=LinkedInFocus.BUSINESS_VALUE, description="Focus area of the post")
+
+
+class ArticleRequest(BaseModel):
+    """Request model for technical article generation."""
+    model_config = ConfigDict(extra="ignore")
+
+    repo_name: str = Field(..., description="Name of the GitHub repository")
+    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    tone: str = Field(default="professional", description="Tone (professional, conversational, academic)")
+    article_style: ArticleStyle = Field(default=ArticleStyle.DEEP_DIVE, description="Style of the article")
+    target_length: ArticleLength = Field(default=ArticleLength.MEDIUM, description="Target length of the article")
+
+
+class ResumeRequest(BaseModel):
+    """Request model for resume bullet point generation."""
+    model_config = ConfigDict(extra="ignore")
+
+    repo_name: str = Field(..., description="Name of the GitHub repository")
+    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    role_target: str = Field(default="Software Engineer", description="Target role to tailor bullets for")
+    num_bullets: int = Field(default=5, ge=3, le=8, description="Number of bullet points to generate")
+    include_metrics: bool = Field(default=True, description="Include quantifiable metrics in bullets")
+
+
+class ContentResponse(BaseModel):
+    """Unified response for all content generation endpoints."""
+    model_config = ConfigDict(extra="ignore")
+
+    success: bool
+    content_type: ContentType
+    content: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None

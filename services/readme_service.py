@@ -1,15 +1,22 @@
 import asyncio
+import json
 import logging
 import os
+import re
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import settings
-from models import BannerConfig, ProjectMetadata
+from models import BannerConfig, ContentType, ProjectMetadata
 from services.ai_service import AIService
 from services.banner_service import BannerService
 from services.file_service import FileService
 from services.github_service import GitHubService
+from services.prompt_templates import (
+    build_article_prompt,
+    build_linkedin_prompt,
+    build_resume_prompt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +31,79 @@ class ReadmeService:
         self.banner_service = BannerService()
 
     # ------------------------------------------------------------------
+    # Shared retrieval pipeline
+    # ------------------------------------------------------------------
+
+    async def _retrieve_repo_context(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Shared retrieval pipeline — gitingest + metadata analysis.
+
+        Returns a dict with keys:
+            repo_info, default_branch, summary_str, tree_str,
+            gitingest_content, source_files, metadata
+        """
+        repo_info = self.github_service.get_repo_info(owner, repo)
+        default_branch = await self.github_service.get_default_branch(owner, repo)
+        log.info("📋 Using branch: %s", default_branch)
+
+        log.info("📥 Ingesting repository using gitingest...")
+        from gitingest import ingest
+
+        url = f"https://github.com/{owner}/{repo}"
+
+        try:
+            summary_str, tree_str, gitingest_content = await asyncio.to_thread(
+                ingest,
+                url,
+                exclude_patterns={
+                    "test", "tests", "docs", "assets", "public",
+                    ".idea", "node_modules", ".git", "migrations", "alembic",
+                },
+                token=settings.github_token,
+            )
+            log.info(
+                "✅ Gitingest completed! Tree size: %d, Content size: %d",
+                len(tree_str),
+                len(gitingest_content),
+            )
+        except Exception as e:
+            import traceback
+
+            with open("gitingest_error.log", "w") as f:
+                traceback.print_exc(file=f)
+            log.error("❌ Gitingest failed: %r", e)
+            raise ValueError(f"Failed to ingest repository: {repr(e)}")
+
+        if not gitingest_content:
+            raise ValueError("No analysable source files found in this repository.")
+
+        source_files = self._parse_gitingest_content(gitingest_content)
+        metadata = self._analyze_project_metadata(source_files, [])
+
+        return {
+            "repo_info": repo_info,
+            "default_branch": default_branch,
+            "summary_str": summary_str,
+            "tree_str": tree_str,
+            "gitingest_content": gitingest_content,
+            "source_files": source_files,
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _parse_gitingest_content(gitingest_content: str) -> Dict[str, str]:
+        """Parse the flat gitingest blob into a {filepath: content} dict."""
+        source_files: Dict[str, str] = {}
+        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
+            if not block.strip():
+                continue
+            parts = block.split("\n" + "=" * 48 + "\n", 1)
+            if len(parts) == 2:
+                file_path = parts[0].strip()
+                file_body = parts[1].strip()
+                source_files[file_path] = file_body[:2000]
+        return source_files
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -34,52 +114,13 @@ class ReadmeService:
         start_time = time.time()
         log.info("🚀 Starting README generation for %s/%s", owner, repo)
 
-        # 1. Gather repository information
-        repo_info = self.github_service.get_repo_info(owner, repo)
-        default_branch = await self.github_service.get_default_branch(owner, repo)
-        log.info("📋 Using branch: %s", default_branch)
+        # 1. Shared retrieval
+        ctx = await self._retrieve_repo_context(owner, repo)
+        repo_info = ctx["repo_info"]
+        default_branch = ctx["default_branch"]
+        metadata = ctx["metadata"]
 
-        log.info("📥 Ingesting repository using gitingest...")
-        from gitingest import ingest
-        url = f"https://github.com/{owner}/{repo}"
-        
-        try:
-            # Run the synchronous `ingest` inside a thread so it initializes its own clean 
-            # ProactorEventLoop on Windows, bypassing Uvicorn's restrictive SelectorEventLoop.
-            summary_str, tree_str, gitingest_content = await asyncio.to_thread(
-                ingest,
-                url,
-                exclude_patterns={'test', 'tests', 'docs', 'assets', 'public', '.idea', 'node_modules', '.git', 'migrations', 'alembic'},
-                token=settings.github_token
-            )
-            log.info("✅ Gitingest completed! Tree size: %d, Content size: %d", len(tree_str), len(gitingest_content))
-        except Exception as e:
-            import traceback
-            with open("gitingest_error.log", "w") as f:
-                traceback.print_exc(file=f)
-            log.error("❌ Gitingest failed: %r", e)
-            raise ValueError(f"Failed to ingest repository: {repr(e)}")
-
-        if not gitingest_content:
-            raise ValueError("No analysable source files found in this repository.")
-
-        # Reconstruct source_files dict for metadata heuristics
-        import re
-        source_files = {}
-        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
-            if not block.strip():
-                continue
-            parts = block.split("\n" + "="*48 + "\n", 1)
-            if len(parts) == 2:
-                file_path = parts[0].strip()
-                file_body = parts[1].strip()
-                # we only need a few chars for metadata detection
-                source_files[file_path] = file_body[:2000]
-
-        # 2. Detect project metadata (heuristic — no AI call)
-        metadata = self._analyze_project_metadata(source_files, [])
-
-        # 3. Generate dual banners (URLs only — no HTTP calls)
+        # 2. Generate dual banners (URLs only — no HTTP calls)
         header_banner_url: Optional[str] = None
         conclusion_banner_url: Optional[str] = None
 
@@ -97,12 +138,19 @@ class ReadmeService:
             except Exception as exc:
                 log.warning("⚠️ Banner generation failed — continuing without banners: %s", exc)
 
-        # 4. Generate README content via AI
+        # 3. Generate README content via AI
         readme_content = await self._generate_readme_content(
-            repo_info, summary_str, tree_str, gitingest_content, metadata, header_banner_url, conclusion_banner_url, tone
+            repo_info,
+            ctx["summary_str"],
+            ctx["tree_str"],
+            ctx["gitingest_content"],
+            metadata,
+            header_banner_url,
+            conclusion_banner_url,
+            tone,
         )
 
-        # 5. Strip the AI-appended metadata block and persist
+        # 4. Strip the AI-appended metadata block and persist
         clean_content = self._clean_readme_content(readme_content)
         file_path = self.file_service.save_readme(owner, repo, clean_content)
 
@@ -114,7 +162,7 @@ class ReadmeService:
             "readme_length": len(clean_content),
             "local_file_path": file_path,
             "processing_time": processing_time,
-            "files_analyzed": len(source_files),
+            "files_analyzed": len(ctx["source_files"]),
             "ai_model_used": settings.ai_model,
             "branch_used": default_branch,
             "metadata": metadata.__dict__,
@@ -124,11 +172,172 @@ class ReadmeService:
             "dual_banners_enabled": banner_config.include_banner if banner_config else False,
         }
 
+    async def generate_content(
+        self,
+        owner: str,
+        repo: str,
+        content_type: ContentType,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Unified content generation dispatcher for LinkedIn, Article, and Resume."""
+        start_time = time.time()
+        log.info("🚀 Starting %s generation for %s/%s", content_type.value, owner, repo)
+
+        # 1. Shared retrieval
+        ctx = await self._retrieve_repo_context(owner, repo)
+        repo_info = ctx["repo_info"]
+        metadata: ProjectMetadata = ctx["metadata"]
+
+        # 2. Prepare file contents for prompt
+        file_contents = self._prepare_file_contents(
+            ctx["summary_str"], ctx["tree_str"], ctx["gitingest_content"]
+        )
+        existing_readme = self._extract_existing_readme(ctx["gitingest_content"])
+
+        # 3. Route to content-specific prompt builder
+        project_name = repo_info["repo"]
+        github_url = repo_info["url"]
+
+        if content_type == ContentType.LINKEDIN:
+            prompt = build_linkedin_prompt(
+                project_name=project_name,
+                github_url=github_url,
+                file_contents=file_contents,
+                existing_readme=existing_readme,
+                metadata=metadata,
+                tone=kwargs.get("tone", "thought_leader"),
+                focus=kwargs.get("focus", "business_value"),
+            )
+        elif content_type == ContentType.ARTICLE:
+            prompt = build_article_prompt(
+                project_name=project_name,
+                github_url=github_url,
+                file_contents=file_contents,
+                existing_readme=existing_readme,
+                metadata=metadata,
+                tone=kwargs.get("tone", "professional"),
+                article_style=kwargs.get("article_style", "deep_dive"),
+                target_length=kwargs.get("target_length", "medium"),
+            )
+        elif content_type == ContentType.RESUME:
+            prompt = build_resume_prompt(
+                project_name=project_name,
+                github_url=github_url,
+                file_contents=file_contents,
+                existing_readme=existing_readme,
+                metadata=metadata,
+                role_target=kwargs.get("role_target", "Software Engineer"),
+                num_bullets=kwargs.get("num_bullets", 5),
+                include_metrics=kwargs.get("include_metrics", True),
+            )
+        else:
+            raise ValueError(f"Unsupported content type: {content_type}")
+
+        # 4. Generate via AI
+        log.info("🤖 Sending %s prompt to AI (%d chars)…", content_type.value, len(prompt))
+        try:
+            raw_result = await self.ai_service.generate_readme(prompt)
+        except Exception as exc:
+            log.error("❌ AI generation failed for %s: %s", content_type.value, exc)
+            raise ValueError(f"AI generation failed: {exc}")
+
+        # 5. Clean output
+        cleaned = self._clean_generated_content(raw_result, content_type)
+
+        processing_time = round(time.time() - start_time, 2)
+        log.info("✅ %s generation complete in %ss", content_type.value, processing_time)
+
+        return {
+            "content": cleaned,
+            "content_type": content_type.value,
+            "processing_time": processing_time,
+            "files_analyzed": len(ctx["source_files"]),
+            "ai_model_used": settings.ai_model,
+            "metadata": metadata.__dict__,
+            "repo_info": repo_info,
+        }
+
     def get_supported_models(self) -> list[str]:
         return self.ai_service.get_supported_models()
 
     # ------------------------------------------------------------------
-    # Private — content generation
+    # Private — shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_file_contents(
+        summary_str: str, tree_str: str, gitingest_content: str, max_chars: int = 100_000
+    ) -> str:
+        """Format repo content for inclusion in a prompt."""
+        truncated = gitingest_content[:max_chars]
+        if len(gitingest_content) > max_chars:
+            truncated += "\n\n... [TRUNCATED] ..."
+        return (
+            f"--- REPOSITORY SUMMARY ---\n{summary_str}\n\n"
+            f"--- DIRECTORY TREE ---\n{tree_str}\n\n"
+            f"--- FILE CONTENTS ---\n{truncated}"
+        )
+
+    @staticmethod
+    def _extract_existing_readme(gitingest_content: str) -> str:
+        """Pull out the existing README.md from gitingest content."""
+        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
+            if not block.strip():
+                continue
+            parts = block.split("\n" + "=" * 48 + "\n", 1)
+            if len(parts) == 2:
+                file_path, file_body = parts[0].strip(), parts[1].strip()
+                if os.path.basename(file_path).lower() in ("readme.md", "readme.txt", "readme"):
+                    return file_body[:2000]
+        return ""
+
+    def _clean_generated_content(self, raw: str, content_type: ContentType) -> str:
+        """Content-type-aware cleaning of AI output."""
+        content = raw.strip()
+
+        if content_type == ContentType.RESUME:
+            # Extract JSON from possible markdown wrapping
+            if "```json" in content:
+                start = content.find("```json") + len("```json")
+                end = content.find("```", start)
+                if end != -1:
+                    content = content[start:end].strip()
+            elif "```" in content:
+                start = content.find("```") + 3
+                end = content.find("```", start)
+                if end != -1:
+                    content = content[start:end].strip()
+            # Validate it's valid JSON
+            try:
+                json.loads(content)
+            except json.JSONDecodeError:
+                log.warning("⚠️ Resume output is not valid JSON, returning raw")
+            return content
+
+        # For LinkedIn and Article — strip markdown fences and scratchpad
+        if "<scratchpad>" in content:
+            start = content.find("<scratchpad>")
+            end_tag = "</scratchpad>"
+            if end_tag in content:
+                end = content.find(end_tag) + len(end_tag)
+            else:
+                end = min(start + 500, len(content))
+            content = content[:start] + content[end:]
+            content = content.strip()
+
+        if content.startswith("```markdown") and content.endswith("```"):
+            content = content[len("```markdown"):].strip()
+            content = content[:-3].strip()
+        elif content.startswith("```") and content.endswith("```"):
+            first_newline = content.find("\n")
+            if first_newline != -1:
+                content = content[first_newline + 1:].strip()
+            content = content[:-3].strip()
+
+        return content
+
+    # ------------------------------------------------------------------
+    # Private — README content generation
     # ------------------------------------------------------------------
 
     async def _generate_readme_content(
@@ -149,28 +358,8 @@ class ReadmeService:
         log.info("📝 Preparing content for AI prompt…")
         prep_start = time.time()
 
-        # Isolate existing readme if possible
-        import re
-        existing_readme_content = ""
-        for block in re.split(r"={48}\n[Ff][Ii][Ll][Ee]: ", gitingest_content):
-            if not block.strip():
-                continue
-            parts = block.split("\n" + "="*48 + "\n", 1)
-            if len(parts) == 2:
-                file_path, file_body = parts[0].strip(), parts[1].strip()
-                if os.path.basename(file_path).lower() in ("readme.md", "readme.txt", "readme"):
-                    existing_readme_content = file_body[:2000]
-                    break
-
-        # Truncate content to avoid blowing out context limits
-        # E.g. 1 token ~ 4 chars. Safe limit = ~100k chars for code alone for most 32k context window models.
-        MAX_CHARS = 100_000
-        truncated_content = gitingest_content[:MAX_CHARS]
-        if len(gitingest_content) > MAX_CHARS:
-            truncated_content += "\n\n... [TRUNCATED] ..."
-
-        # Format perfectly for AI
-        file_contents = f"--- REPOSITORY SUMMARY ---\n{summary_str}\n\n--- DIRECTORY TREE ---\n{tree_str}\n\n--- FILE CONTENTS ---\n{truncated_content}"
+        existing_readme_content = self._extract_existing_readme(gitingest_content)
+        file_contents = self._prepare_file_contents(summary_str, tree_str, gitingest_content)
 
         ai_prompt = self._build_prompt(
             project_name,

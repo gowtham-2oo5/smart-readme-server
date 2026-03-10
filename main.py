@@ -13,7 +13,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings
-from models import BannerConfig, ProjectMetadata, ReadmeRequest, ReadmeResponse
+from models import (
+    ArticleRequest,
+    BannerConfig,
+    ContentResponse,
+    ContentType,
+    LinkedInRequest,
+    ProjectMetadata,
+    ReadmeRequest,
+    ReadmeResponse,
+    ResumeRequest,
+)
 from services.file_service import FileService
 from services.readme_service import ReadmeService
 
@@ -75,6 +85,9 @@ async def root():
         },
         "endpoints": {
             "generate": "/generate-readme",
+            "linkedin": "/generate-linkedin",
+            "article": "/generate-article",
+            "resume": "/generate-resume-points",
             "models": "/models",
             "health": "/health",
             "files": "/files",
@@ -125,6 +138,104 @@ async def generate_readme(request: ReadmeRequest, readme_svc: ReadmeService = De
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating README: {str(exc)}"
+        ) from exc
+
+
+@app.post("/generate-linkedin", response_model=ContentResponse)
+async def generate_linkedin(
+    request: LinkedInRequest,
+    readme_svc: ReadmeService = Depends(get_readme_service),
+):
+    """Generate a LinkedIn announcement post for a GitHub repository."""
+    try:
+        log.info("📥 LinkedIn request: %s/%s", request.owner_name, request.repo_name)
+
+        result = await readme_svc.generate_content(
+            owner=request.owner_name,
+            repo=request.repo_name,
+            content_type=ContentType.LINKEDIN,
+            tone=request.tone.value,
+            focus=request.focus.value,
+        )
+
+        return ContentResponse(
+            success=True,
+            content_type=ContentType.LINKEDIN,
+            content=result["content"],
+            data=result,
+        )
+
+    except Exception as exc:
+        log.error("❌ Error generating LinkedIn post: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating LinkedIn post: {str(exc)}",
+        ) from exc
+
+
+@app.post("/generate-article", response_model=ContentResponse)
+async def generate_article(
+    request: ArticleRequest,
+    readme_svc: ReadmeService = Depends(get_readme_service),
+):
+    """Generate a technical article about a GitHub repository."""
+    try:
+        log.info("📥 Article request: %s/%s", request.owner_name, request.repo_name)
+
+        result = await readme_svc.generate_content(
+            owner=request.owner_name,
+            repo=request.repo_name,
+            content_type=ContentType.ARTICLE,
+            tone=request.tone,
+            article_style=request.article_style.value,
+            target_length=request.target_length.value,
+        )
+
+        return ContentResponse(
+            success=True,
+            content_type=ContentType.ARTICLE,
+            content=result["content"],
+            data=result,
+        )
+
+    except Exception as exc:
+        log.error("❌ Error generating article: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating article: {str(exc)}",
+        ) from exc
+
+
+@app.post("/generate-resume-points", response_model=ContentResponse)
+async def generate_resume_points(
+    request: ResumeRequest,
+    readme_svc: ReadmeService = Depends(get_readme_service),
+):
+    """Generate resume bullet points and project description for a GitHub repository."""
+    try:
+        log.info("📥 Resume request: %s/%s (target: %s)", request.owner_name, request.repo_name, request.role_target)
+
+        result = await readme_svc.generate_content(
+            owner=request.owner_name,
+            repo=request.repo_name,
+            content_type=ContentType.RESUME,
+            role_target=request.role_target,
+            num_bullets=request.num_bullets,
+            include_metrics=request.include_metrics,
+        )
+
+        return ContentResponse(
+            success=True,
+            content_type=ContentType.RESUME,
+            content=result["content"],
+            data=result,
+        )
+
+    except Exception as exc:
+        log.error("❌ Error generating resume points: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating resume points: {str(exc)}",
         ) from exc
 
 
