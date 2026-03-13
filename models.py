@@ -51,8 +51,8 @@ class BannerConfig(BaseModel):
 class ReadmeRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    repo_name: str = Field(..., description="Name of the GitHub repository")
-    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    repo_name: str = Field(..., min_length=1, description="Name of the GitHub repository")
+    owner_name: str = Field(..., min_length=1, description="Owner of the GitHub repository")
     tone: str = Field(default="professional", description="Tone of the README (e.g., professional, casual, developer, instructional)")
     banner_config: BannerConfig = Field(default_factory=BannerConfig, description="Banner customization settings")
 
@@ -93,8 +93,8 @@ class LinkedInRequest(BaseModel):
     """Request model for LinkedIn post generation."""
     model_config = ConfigDict(extra="ignore")
 
-    repo_name: str = Field(..., description="Name of the GitHub repository")
-    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    repo_name: str = Field(..., min_length=1, description="Name of the GitHub repository")
+    owner_name: str = Field(..., min_length=1, description="Owner of the GitHub repository")
     tone: LinkedInTone = Field(default=LinkedInTone.THOUGHT_LEADER, description="Tone of the LinkedIn post")
     focus: LinkedInFocus = Field(default=LinkedInFocus.BUSINESS_VALUE, description="Focus area of the post")
 
@@ -103,8 +103,8 @@ class ArticleRequest(BaseModel):
     """Request model for technical article generation."""
     model_config = ConfigDict(extra="ignore")
 
-    repo_name: str = Field(..., description="Name of the GitHub repository")
-    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    repo_name: str = Field(..., min_length=1, description="Name of the GitHub repository")
+    owner_name: str = Field(..., min_length=1, description="Owner of the GitHub repository")
     tone: str = Field(default="professional", description="Tone (professional, conversational, academic)")
     article_style: ArticleStyle = Field(default=ArticleStyle.DEEP_DIVE, description="Style of the article")
     target_length: ArticleLength = Field(default=ArticleLength.MEDIUM, description="Target length of the article")
@@ -114,9 +114,10 @@ class ResumeRequest(BaseModel):
     """Request model for resume bullet point generation."""
     model_config = ConfigDict(extra="ignore")
 
-    repo_name: str = Field(..., description="Name of the GitHub repository")
-    owner_name: str = Field(..., description="Owner of the GitHub repository")
+    repo_name: str = Field(..., min_length=1, description="Name of the GitHub repository")
+    owner_name: str = Field(..., min_length=1, description="Owner of the GitHub repository")
     role_target: str = Field(default="Software Engineer", description="Target role to tailor bullets for")
+    seniority: str = Field(default="mid", description="Seniority level: intern, junior, mid, senior, staff, principal")
     num_bullets: int = Field(default=5, ge=3, le=8, description="Number of bullet points to generate")
     include_metrics: bool = Field(default=True, description="Include quantifiable metrics in bullets")
 
@@ -130,3 +131,51 @@ class ContentResponse(BaseModel):
     content: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Chat Article Pipeline — Session & WebSocket Models
+# ---------------------------------------------------------------------------
+
+class ArticleSessionState(str, Enum):
+    INGESTING = "ingesting"
+    QUESTIONING = "questioning"
+    GENERATING = "generating"
+    TUNING = "tuning"
+    DONE = "done"
+    ERROR = "error"
+
+
+class Chunk(BaseModel):
+    """A semantic chunk of a repo file, ready for embedding."""
+    text: str
+    file_path: str
+    chunk_type: str        # "config" | "function" | "class" | "doc" | "other"
+    language: str
+
+
+class ArticleStartRequest(BaseModel):
+    """Request to start a chat-based article generation session."""
+    model_config = ConfigDict(extra="ignore")
+
+    owner_name: str = Field(..., min_length=1, description="GitHub repo owner")
+    repo_name: str = Field(..., min_length=1, description="GitHub repo name")
+
+
+class ArticleStartResponse(BaseModel):
+    """Returned immediately after POST /article/start."""
+    session_id: str
+    status: ArticleSessionState
+    message: str
+
+
+class WSMessageIn(BaseModel):
+    """Message from client → server over WebSocket."""
+    type: str   # "answer" | "tune" | "regenerate"
+    data: str = ""
+
+
+class WSMessageOut(BaseModel):
+    """Message from server → client over WebSocket."""
+    type: str   # see event protocol in plan
+    data: Any = None

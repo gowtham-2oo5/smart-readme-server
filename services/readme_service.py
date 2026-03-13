@@ -227,6 +227,7 @@ class ReadmeService:
                 existing_readme=existing_readme,
                 metadata=metadata,
                 role_target=kwargs.get("role_target", "Software Engineer"),
+                seniority=kwargs.get("seniority", "mid"),
                 num_bullets=kwargs.get("num_bullets", 5),
                 include_metrics=kwargs.get("include_metrics", True),
             )

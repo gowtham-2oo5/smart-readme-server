@@ -225,6 +225,7 @@ def build_resume_prompt(
     existing_readme: str,
     metadata: ProjectMetadata,
     role_target: str = "Software Engineer",
+    seniority: str = "mid",
     num_bullets: int = 5,
     include_metrics: bool = True,
 ) -> str:
@@ -239,6 +240,18 @@ def build_resume_prompt(
             "on the codebase size and architecture, but keep them realistic."
         )
 
+    # Seniority-specific guidance
+    seniority_guidance = {
+        "intern": "Focus on learning, contributions to team projects, and foundational technical skills. Use verbs like 'Contributed', 'Assisted', 'Learned', 'Supported'.",
+        "junior": "Emphasize feature implementation, bug fixes, and growing technical skills. Use verbs like 'Developed', 'Implemented', 'Fixed', 'Built'.",
+        "mid": "Highlight ownership of features/modules, technical decisions, and cross-functional collaboration. Use verbs like 'Designed', 'Architected', 'Led', 'Optimized'.",
+        "senior": "Showcase system design, technical leadership, mentorship, and business impact. Use verbs like 'Architected', 'Spearheaded', 'Mentored', 'Drove'.",
+        "staff": "Demonstrate strategic technical vision, cross-team influence, and organizational impact. Use verbs like 'Established', 'Pioneered', 'Influenced', 'Transformed'.",
+        "principal": "Emphasize company-wide technical strategy, innovation, and industry leadership. Use verbs like 'Defined', 'Pioneered', 'Evangelized', 'Revolutionized'.",
+    }
+    
+    seniority_context = seniority_guidance.get(seniority.lower(), seniority_guidance["mid"])
+
     system_context = (
         "You are a senior technical resume coach who has helped 500+ engineers land jobs "
         "at top tech companies. You write ATS-optimized bullet points that are specific, "
@@ -251,6 +264,10 @@ def build_resume_prompt(
 Analyse this project's source code and generate resume-ready content.
 
 ### TARGET ROLE: {role_target}
+### SENIORITY LEVEL: {seniority.upper()}
+
+### SENIORITY GUIDANCE:
+{seniority_context}
 
 ### REQUIREMENTS:
 1. Generate exactly {num_bullets} bullet points for the experience/projects section of a resume.
@@ -258,11 +275,11 @@ Analyse this project's source code and generate resume-ready content.
 3. Extract a list of demonstrated technical skills from the codebase.
 
 ### BULLET POINT RULES:
-- Start each bullet with a STRONG ACTION VERB (Architected, Engineered, Designed, Implemented, Built, Optimized, Integrated, Automated, etc.)
+- Start each bullet with a STRONG ACTION VERB appropriate for {seniority.upper()} level.
 - Each bullet should be 1-2 lines long (15-25 words ideal).
-- Focus on IMPACT and COMPLEXITY, not just what was done.
+- Focus on IMPACT and COMPLEXITY appropriate for a {seniority.upper()} {role_target}.
 - {metrics_instruction if include_metrics else "Focus on the technical complexity and scope."}
-- Tailor the language and emphasis to a **{role_target}** position.
+- Tailor the language and emphasis to a **{role_target}** position at **{seniority.upper()}** level.
 - Do NOT use first person (no "I" or "my").
 
 ### OUTPUT FORMAT:

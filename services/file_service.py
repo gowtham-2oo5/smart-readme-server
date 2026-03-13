@@ -11,8 +11,8 @@ log = logging.getLogger(__name__)
 class FileService:
     """Service for handling local file operations."""
 
-    def __init__(self):
-        self.output_dir = Path(settings.output_dir)
+    def __init__(self, output_dir: str = None):
+        self.output_dir = Path(output_dir) if output_dir else Path(settings.output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
     def save_readme(self, owner: str, repo: str, content: str) -> str:

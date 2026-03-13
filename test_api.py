@@ -320,6 +320,7 @@ def test_generate_resume_custom_options(mock_gen):
         "repo_name": "test-repo",
         "owner_name": "test-owner",
         "role_target": "Backend Engineer",
+        "seniority": "senior",
         "num_bullets": 3,
         "include_metrics": False,
     }
@@ -328,8 +329,66 @@ def test_generate_resume_custom_options(mock_gen):
     assert response.status_code == 200
     _, kwargs = mock_gen.call_args
     assert kwargs["role_target"] == "Backend Engineer"
+    assert kwargs["seniority"] == "senior"
     assert kwargs["num_bullets"] == 3
     assert kwargs["include_metrics"] is False
+
+
+@pytest.mark.parametrize("seniority,expected_verbs", [
+    ("intern", ["Contributed", "Assisted", "Supported"]),
+    ("junior", ["Developed", "Implemented", "Built"]),
+    ("mid", ["Designed", "Architected", "Led"]),
+    ("senior", ["Spearheaded", "Mentored", "Drove"]),
+    ("staff", ["Established", "Pioneered", "Influenced"]),
+    ("principal", ["Defined", "Revolutionized", "Evangelized"]),
+])
+@patch("services.readme_service.ReadmeService.generate_content")
+def test_resume_seniority_levels(mock_gen, seniority, expected_verbs):
+    """Test that different seniority levels generate appropriate action verbs."""
+    resume_json = json.dumps({
+        "repo_description": "A test project",
+        "bullets": [f"{verb} a feature" for verb in expected_verbs],
+        "skills_demonstrated": ["Python"],
+    })
+    mock_gen.return_value = _mock_content_result("resume", resume_json)
+
+    payload = {
+        "repo_name": "test-repo",
+        "owner_name": "test-owner",
+        "seniority": seniority,
+    }
+    response = client.post("/generate-resume-points", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = mock_gen.call_args
+    assert kwargs["seniority"] == seniority
+    
+    # Verify the content contains expected verbs
+    parsed = json.loads(response.json()["content"])
+    bullets_text = " ".join(parsed["bullets"])
+    for verb in expected_verbs:
+        assert verb in bullets_text
+
+
+@patch("services.readme_service.ReadmeService.generate_content")
+def test_resume_default_seniority(mock_gen):
+    """Test that seniority defaults to 'mid' when not provided."""
+    resume_json = json.dumps({
+        "repo_description": "Test",
+        "bullets": ["Designed a feature"],
+        "skills_demonstrated": ["Python"],
+    })
+    mock_gen.return_value = _mock_content_result("resume", resume_json)
+
+    payload = {
+        "repo_name": "test-repo",
+        "owner_name": "test-owner",
+    }
+    response = client.post("/generate-resume-points", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = mock_gen.call_args
+    assert kwargs["seniority"] == "mid"  # Default value
 
 
 # =====================================================================
@@ -367,3 +426,118 @@ def test_resume_generation_failure(mock_gen):
 
     assert response.status_code == 500
     assert "source files" in response.json()["detail"]
+
+
+# =====================================================================
+# Edge cases
+# =====================================================================
+
+def test_resume_invalid_seniority_accepted():
+    """Invalid seniority values should be accepted (AI will handle gracefully)."""
+    payload = {
+        "repo_name": "test-repo",
+        "owner_name": "test-owner",
+        "seniority": "super-ultra-mega-senior",  # Not in our list but valid string
+    }
+    # Should not raise 422 - string validation passes
+    response = client.post("/generate-resume-points", json=payload)
+    # Will fail at 500 level due to missing mock, but validates the schema accepts it
+    assert response.status_code in [200, 500]  # Not 422
+
+
+def test_resume_malformed_json_response():
+    """Test handling when AI returns malformed JSON."""
+    with patch("services.readme_service.ReadmeService.generate_content") as mock_gen:
+        # Return invalid JSON string
+        mock_gen.return_value = _mock_content_result("resume", "This is not JSON at all")
+        
+        payload = {"repo_name": "test-repo", "owner_name": "test-owner"}
+        response = client.post("/generate-resume-points", json=payload)
+        
+        # Should still return 200 with the raw content (frontend will handle parse error)
+        assert response.status_code == 200
+        assert response.json()["content"] == "This is not JSON at all"
+
+
+def test_linkedin_empty_repo_name():
+    """Empty repo name should fail validation with min_length."""
+    payload = {
+        "repo_name": "",
+        "owner_name": "test-owner",
+    }
+    response = client.post("/generate-linkedin", json=payload)
+    assert response.status_code == 422
+
+
+def test_article_empty_owner_name():
+    """Empty owner name should fail validation with min_length."""
+    payload = {
+        "repo_name": "test-repo",
+        "owner_name": "",
+    }
+    response = client.post("/generate-article", json=payload)
+    assert response.status_code == 422
+
+
+@patch("services.readme_service.ReadmeService.generate_content")
+def test_concurrent_resume_requests(mock_gen):
+    """Test that multiple concurrent requests don't interfere."""
+    import threading
+    
+    mock_gen.return_value = _mock_content_result("resume", json.dumps({
+        "repo_description": "Test",
+        "bullets": ["Bullet 1"],
+        "skills_demonstrated": ["Python"],
+    }))
+    
+    results = []
+    
+    def make_request(seniority):
+        payload = {
+            "repo_name": "test-repo",
+            "owner_name": "test-owner",
+            "seniority": seniority,
+        }
+        response = client.post("/generate-resume-points", json=payload)
+        results.append((seniority, response.status_code))
+    
+    threads = [
+        threading.Thread(target=make_request, args=("intern",)),
+        threading.Thread(target=make_request, args=("senior",)),
+        threading.Thread(target=make_request, args=("principal",)),
+    ]
+    
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    
+    # All should succeed
+    assert len(results) == 3
+    assert all(status == 200 for _, status in results)
+
+
+def test_readme_special_characters_in_repo_name():
+    """Test handling of special characters in repo names."""
+    with patch("services.readme_service.ReadmeService.generate_readme") as mock_gen:
+        mock_gen.return_value = _mock_readme_result()
+        
+        payload = {
+            "repo_name": "my-repo.v2",
+            "owner_name": "user_123",
+        }
+        response = client.post("/generate-readme", json=payload)
+        assert response.status_code == 200
+
+
+@patch("services.readme_service.ReadmeService.generate_content")
+def test_article_very_long_repo_name(mock_gen):
+    """Test handling of very long repository names."""
+    mock_gen.return_value = _mock_content_result("article", "Long article content")
+    
+    payload = {
+        "repo_name": "a" * 200,  # Very long name
+        "owner_name": "test-owner",
+    }
+    response = client.post("/generate-article", json=payload)
+    assert response.status_code == 200

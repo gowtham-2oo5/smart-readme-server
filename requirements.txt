@@ -6,3 +6,6 @@ python-multipart
 python-dotenv
 httpx
 gitingest
+chromadb
+google-generativeai
+tiktoken

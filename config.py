@@ -13,9 +13,14 @@ class Settings(BaseSettings):
     # GitHub API
     github_token: str = ""
 
-    # AI Model
+    # AI Models
     nvidia_api_key: str = ""
     ai_model: str = "qwen/qwen2.5-coder-32b-instruct"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+
+    # Vector store
+    chroma_persist_dir: str = "./chroma_db"
 
     # Local storage
     output_dir: str = "./generated_readmes"

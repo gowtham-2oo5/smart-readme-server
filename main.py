@@ -2,19 +2,23 @@ import asyncio
 import logging
 import logging.config
 import sys
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings
 from models import (
     ArticleRequest,
+    ArticleSessionState,
+    ArticleStartRequest,
+    ArticleStartResponse,
     BannerConfig,
     ContentResponse,
     ContentType,
@@ -23,9 +27,17 @@ from models import (
     ReadmeRequest,
     ReadmeResponse,
     ResumeRequest,
+    WSMessageIn,
 )
+from services.ai_service import AIService
+from services.article_builder import ArticleBuilder
+from services.article_session import ArticleSession
 from services.file_service import FileService
+from services.gemini_service import GeminiService
+from services.ingestion_service import IngestionService
+from services.rag_service import RAGService
 from services.readme_service import ReadmeService
+from services.websocket_manager import manager as ws_manager
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at startup
@@ -87,6 +99,8 @@ async def root():
             "generate": "/generate-readme",
             "linkedin": "/generate-linkedin",
             "article": "/generate-article",
+            "article_chat_start": "POST /article/start",
+            "article_chat_ws": "WS /ws/article/{session_id}",
             "resume": "/generate-resume-points",
             "models": "/models",
             "health": "/health",
@@ -220,6 +234,7 @@ async def generate_resume_points(
             repo=request.repo_name,
             content_type=ContentType.RESUME,
             role_target=request.role_target,
+            seniority=request.seniority,
             num_bullets=request.num_bullets,
             include_metrics=request.include_metrics,
         )
@@ -389,6 +404,213 @@ async def get_banner_options(readme_svc: ReadmeService = Depends(get_readme_serv
         }
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Chat-Based Article Generator — Session Store + Endpoints
+# ---------------------------------------------------------------------------
+
+# In-memory session store — maps session_id → ArticleSession
+_sessions: dict[str, ArticleSession] = {}
+
+
+@lru_cache()
+def _get_ai_service() -> AIService:
+    return AIService()
+
+
+@lru_cache()
+def _get_rag_service() -> RAGService:
+    return RAGService()
+
+
+@lru_cache()
+def _get_gemini_service() -> GeminiService:
+    return GeminiService()
+
+
+@lru_cache()
+def _get_ingestion_service() -> IngestionService:
+    return IngestionService(
+        ai_service=_get_ai_service(),
+        rag_service=_get_rag_service(),
+    )
+
+
+@lru_cache()
+def _get_article_builder() -> ArticleBuilder:
+    return ArticleBuilder(rag_service=_get_rag_service())
+
+
+@app.post("/article/start", response_model=ArticleStartResponse)
+async def article_start(request: ArticleStartRequest, background_tasks: BackgroundTasks):
+    """
+    Kick off a chat-based article generation session.
+
+    Returns a ``session_id`` immediately.  Connect to
+    ``WS /ws/article/{session_id}`` to receive progress and continue the
+    conversation.
+    """
+    session_id = str(uuid.uuid4())
+    session = ArticleSession(
+        session_id=session_id,
+        owner=request.owner_name,
+        repo=request.repo_name,
+    )
+    _sessions[session_id] = session
+    log.info("🆕 Article session %s created for %s/%s", session_id, request.owner_name, request.repo_name)
+
+    # Kick off ingestion in the background so we can return the session_id
+    background_tasks.add_task(
+        _run_ingestion,
+        session_id=session_id,
+        owner=request.owner_name,
+        repo=request.repo_name,
+    )
+
+    return ArticleStartResponse(
+        session_id=session_id,
+        status=ArticleSessionState.INGESTING,
+        message=f"Session started. Connect to WS /ws/article/{session_id} to begin.",
+    )
+
+
+async def _run_ingestion(session_id: str, owner: str, repo: str) -> None:
+    """Background task: ingest repo, embed chunks, identify features."""
+    session = _sessions.get(session_id)
+    if session is None:
+        return
+
+    ingestion_svc = _get_ingestion_service()
+
+    try:
+        async for progress_msg in ingestion_svc.ingest_repo(owner, repo, session_id):
+            if progress_msg.startswith("__features_identified__:"):
+                # Sentinel indicating feature identification is done
+                raw = progress_msg.split(":", 1)[1]
+                features = [f.strip() for f in raw.split(",") if f.strip()]
+                session.set_features(features)
+                # Push to WebSocket if client is already connected
+                await ws_manager.send_features(session_id, features)
+                # Send first question
+                first_q = session.next_question()
+                if first_q:
+                    await ws_manager.send_question(session_id, first_q)
+            else:
+                await ws_manager.send_progress(session_id, progress_msg)
+
+    except Exception as exc:
+        log.error("❌ Ingestion failed for session %s: %s", session_id, exc)
+        session.mark_error()
+        await ws_manager.send_error(session_id, f"Ingestion failed: {exc}")
+
+
+@app.websocket("/ws/article/{session_id}")
+async def article_websocket(websocket: WebSocket, session_id: str):
+    """
+    Bidirectional WebSocket for the chat-based article pipeline.
+
+    Client → Server events:
+      { "type": "answer",      "data": "<user answer>" }
+      { "type": "tune",        "data": "<tuning instruction>" }
+      { "type": "regenerate",  "data": "" }
+
+    Server → Client events:
+      { "type": "progress",            "data": "<message>" }
+      { "type": "features_identified", "data": ["feature1", ...] }
+      { "type": "question",            "data": "<question text>" }
+      { "type": "article_chunk",       "data": "<token chunk>" }
+      { "type": "article_done",        "data": { "word_count": N } }
+      { "type": "error",               "data": "<message>" }
+    """
+    session = _sessions.get(session_id)
+    if session is None:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "data": f"Session '{session_id}' not found."})
+        await websocket.close()
+        return
+
+    await ws_manager.connect(session_id, websocket)
+
+    # If ingestion already finished before WS connected, send current state
+    if session.state == ArticleSessionState.QUESTIONING and session.features:
+        await ws_manager.send_features(session_id, session.features)
+        q = session.next_question()
+        if q:
+            await ws_manager.send_question(session_id, q)
+
+    gemini_svc = _get_gemini_service()
+    builder = _get_article_builder()
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            msg = WSMessageIn(**raw)
+
+            if msg.type == "answer":
+                session.record_answer(msg.data)
+
+                if session.has_enough_context:
+                    # All Q&A done — generate the article
+                    await _stream_article(session, gemini_svc, builder)
+                else:
+                    next_q = session.next_question()
+                    if next_q:
+                        await ws_manager.send_question(session_id, next_q)
+
+            elif msg.type == "tune":
+                if not session.draft:
+                    await ws_manager.send_error(session_id, "No draft to tune yet.")
+                    continue
+                # Append tuning instruction to the existing draft prompt and regenerate
+                tune_prompt = (
+                    f"Here is a Medium article draft:\n\n{session.draft}\n\n"
+                    f"Apply the following change and return the FULL revised article:\n{msg.data}"
+                )
+                await _stream_article_from_prompt(session, gemini_svc, tune_prompt)
+
+            elif msg.type == "regenerate":
+                await _stream_article(session, gemini_svc, builder)
+
+    except WebSocketDisconnect:
+        log.info("WS client disconnected from session %s", session_id)
+    except Exception as exc:
+        log.error("WS error on session %s: %s", session_id, exc)
+        await ws_manager.send_error(session_id, str(exc))
+    finally:
+        ws_manager.disconnect(session_id)
+
+
+async def _stream_article(
+    session: ArticleSession,
+    gemini_svc: GeminiService,
+    builder: ArticleBuilder,
+) -> None:
+    """Build the prompt and stream Gemini's response to the client."""
+    session.mark_generating()
+    prompt = await builder.build_prompt(session)
+    await _stream_article_from_prompt(session, gemini_svc, prompt)
+
+
+async def _stream_article_from_prompt(
+    session: ArticleSession,
+    gemini_svc: GeminiService,
+    prompt: str,
+) -> None:
+    """Stream article tokens to the client and track the full draft."""
+    full_text = ""
+    try:
+        async for chunk in gemini_svc.stream_generate(prompt):
+            full_text += chunk
+            await ws_manager.send_article_chunk(session.session_id, chunk)
+        word_count = len(full_text.split())
+        session.mark_done(full_text)
+        await ws_manager.send_article_done(session.session_id, word_count)
+        log.info("Article generation done for session %s: %d words", session.session_id, word_count)
+    except Exception as exc:
+        log.error("Streaming failed for session %s: %s", session.session_id, exc)
+        session.mark_error()
+        await ws_manager.send_error(session.session_id, f"Generation failed: {exc}")
 
 
 if __name__ == "__main__":

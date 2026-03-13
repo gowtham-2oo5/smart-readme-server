@@ -95,6 +95,7 @@
   "owner_name": "gowtham-2oo5",
   "repo_name": "CRT_Portal-server",
   "role_target": "Backend Engineer",
+  "seniority": "senior",
   "num_bullets": 5,
   "include_metrics": true
 }
@@ -103,6 +104,7 @@
 | Field | Default | Notes |
 |-------|---------|-------|
 | `role_target` | `"Software Engineer"` | Any role string — bullets are tailored to it |
+| `seniority` | `"mid"` | Options: `intern`, `junior`, `mid`, `senior`, `staff`, `principal` |
 | `num_bullets` | `5` | Min: 3, Max: 8 |
 | `include_metrics` | `true` | Adds quantifiable metrics to bullets |
 
