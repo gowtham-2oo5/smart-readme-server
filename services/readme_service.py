@@ -445,7 +445,7 @@ Write a masterclass README.md tailored exactly to the project's complexity and t
 Before generating the final README, please write a brief reasoning block where you identify:
 1. The project's core value proposition.
 2. The primary target audience.
-3. The top 3 features to highlight.
+3. ALL major features by analyzing the codebase (for FastAPI: check all @app.post, @app.get, @app.websocket endpoints; for other frameworks: analyze routes/controllers).
 4. Any complex installation/setup steps that need simplifying.
 You MUST wrap this exact block in `<scratchpad>` and `</scratchpad>` XML tags. Do NOT use markdown headers like `### <scratchpad>`.
 
@@ -453,7 +453,7 @@ You MUST wrap this exact block in `<scratchpad>` and `</scratchpad>` XML tags. D
 1. **Title & Tagline**: A single clear sentence explaining what the project is.
 2. **Badges**: 4-6 badges showing the core tech stack exactly accurately.
 3. **Overview**: Brief but compelling project overview.
-4. **Key Features**: The top 3-5 features (as bullet points with brief explanations).
+4. **Key Features**: Analyze ALL API endpoints and features in the codebase. For FastAPI projects, look for @app.post, @app.get, @app.websocket decorators. List EVERY major feature with brief explanations. Do NOT limit to 3-5 features if the project has more.
 5. **Quick Start Guide**: Get developers running in under 3 minutes.
 6. **Architecture**: A deep, highly technical breakdown of the system design. Do NOT write generic filler like "Built with Spring Boot and JPA". Instead, explain the actual core domain models, how data flows through the application, the structure of the API/Database layers, and any advanced architectural choices (e.g., WebSocket pipelines, JWT auth flows, design patterns used). Use bullet points for readability.
 7. **License & Contributing**: Brief standard clauses.
