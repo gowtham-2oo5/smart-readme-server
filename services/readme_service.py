@@ -399,6 +399,27 @@ class ReadmeService:
     # Private — prompt construction
     # ------------------------------------------------------------------
 
+    def _extract_api_endpoints(self, file_contents: str) -> str:
+        """Extract all FastAPI endpoints from main.py for explicit feature listing."""
+        endpoints = []
+        
+        # Look for @app.post, @app.get, @app.delete, @app.websocket patterns
+        patterns = [
+            (r'@app\.post\(["\']([^"\']+)["\']', 'POST'),
+            (r'@app\.get\(["\']([^"\']+)["\']', 'GET'),
+            (r'@app\.delete\(["\']([^"\']+)["\']', 'DELETE'),
+            (r'@app\.websocket\(["\']([^"\']+)["\']', 'WebSocket'),
+        ]
+        
+        for pattern, method in patterns:
+            matches = re.findall(pattern, file_contents)
+            for match in matches:
+                endpoints.append(f"  - {method} {match}")
+        
+        if endpoints:
+            return "**API ENDPOINTS DETECTED:**\n" + "\n".join(sorted(set(endpoints))) + "\n\n"
+        return ""
+
     def _build_prompt(
         self,
         project_name: str,
@@ -453,18 +474,23 @@ You MUST wrap this exact block in `<scratchpad>` and `</scratchpad>` XML tags. D
 1. **Title & Tagline**: A single clear sentence explaining what the project is.
 2. **Badges**: 4-6 badges showing the core tech stack exactly accurately.
 3. **Overview**: Brief but compelling project overview.
-4. **Key Features**: Analyze ALL API endpoints and features in the codebase. For FastAPI projects, look for @app.post, @app.get, @app.websocket decorators. List EVERY major feature with brief explanations. Do NOT limit to 3-5 features if the project has more.
+4. **Key Features**: Use the "API ENDPOINTS DETECTED" list above to document EVERY feature. Each endpoint represents a feature that should be explained. Analyze the source code to understand what each endpoint does and document it with a brief explanation. Do NOT arbitrarily limit features - if there are 10+ endpoints, document all of them.
 5. **Quick Start Guide**: Get developers running in under 3 minutes.
 6. **Architecture**: A deep, highly technical breakdown of the system design. Do NOT write generic filler like "Built with Spring Boot and JPA". Instead, explain the actual core domain models, how data flows through the application, the structure of the API/Database layers, and any advanced architectural choices (e.g., WebSocket pipelines, JWT auth flows, design patterns used). Use bullet points for readability.
 7. **License & Contributing**: Brief standard clauses.
 """
         
-        # 4. Input Context
+        # 4. Extract endpoints explicitly
+        endpoints_list = self._extract_api_endpoints(file_contents)
+        
+        # 5. Input Context
         input_data = f"""
 ### INPUT DATA:
 **Project Name**: {project_name}
 **Repository**: {github_url}
 **Detected Primary Language**: {metadata.primary_language}
+
+{endpoints_list}
 
 **EXISTING README.md** (Draw inspiration from this if useful, but adapt it to the new standards):
 <existing_readme>
