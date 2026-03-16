@@ -91,11 +91,30 @@ class BannerService:
         """🌊 SICK Capsule Render Header Banner"""
         
         project_name = repo_info['repo'].replace('-', ' ').replace('_', ' ').title()
-        tech_stack = metadata.tech_stack[:3]
         
-        description = f"⚡ {metadata.primary_language} {metadata.project_type.title()}"
-        if tech_stack:
-            description += f" • {' + '.join(tech_stack)}"
+        # Build a meaningful description based on project type
+        type_labels = {
+            "api_server": "REST API Server",
+            "web_app": "Web Application",
+            "full_stack_app": "Full-Stack Application",
+            "cli_tool": "CLI Tool",
+            "application": "Application",
+            "library": "Library",
+        }
+        type_label = type_labels.get(metadata.project_type, metadata.project_type.replace('_', ' ').title())
+        
+        # Use frameworks for description if available, otherwise use tech stack
+        if metadata.frameworks:
+            description = f"⚡ {type_label} • {' • '.join(metadata.frameworks[:3])}"
+        elif metadata.tech_stack and len(metadata.tech_stack) > 1:
+            # Skip the primary language (first item) and use the rest
+            stack_items = [t for t in metadata.tech_stack[1:4] if t != metadata.primary_language]
+            if stack_items:
+                description = f"⚡ {type_label} • {' • '.join(stack_items)}"
+            else:
+                description = f"⚡ {metadata.primary_language} {type_label}"
+        else:
+            description = f"⚡ {metadata.primary_language} {type_label}"
         
         color = self.language_colors.get(metadata.primary_language, 'timeAuto')
         

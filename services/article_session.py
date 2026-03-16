@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List
 
 from models import ArticleSessionState
 
@@ -24,27 +23,46 @@ log = logging.getLogger(__name__)
 
 # ── Adaptive question bank ────────────────────────────────────────────────────
 
-_BASE_QUESTIONS = [
-    "Who is the target audience for this article? (e.g. 'beginner Python devs', 'senior backend engineers')",
-    "What tone do you prefer? Options: A) Technical deep-dive  B) Story-driven / conversational  C) Tutorial walkthrough",
+_MCQ_BANK: list[dict] = [
+    {
+        "question": "Who is the target audience for this article?",
+        "options": [
+            {"id": "a", "label": "Beginners", "description": "New developers, step-by-step explanations"},
+            {"id": "b", "label": "Intermediate devs", "description": "Familiar with the stack, want depth"},
+            {"id": "c", "label": "Senior engineers", "description": "Architecture decisions, tradeoffs"},
+        ],
+        "allow_custom": True,
+        "custom_placeholder": "Describe your target audience...",
+    },
+    {
+        "question": "What tone and style should the article have?",
+        "options": [
+            {"id": "a", "label": "Technical deep-dive", "description": "Code-heavy, detailed analysis"},
+            {"id": "b", "label": "Story-driven", "description": "Conversational, narrative flow"},
+            {"id": "c", "label": "Tutorial walkthrough", "description": "Step-by-step, hands-on guide"},
+        ],
+        "allow_custom": True,
+        "custom_placeholder": "Describe the style you want...",
+    },
 ]
 
-_FEATURE_QUESTIONS = [
-    "Which 2-3 features should be the main focus of the article?",
-]
+_FEATURE_MCQ: dict = {
+    "question": "Which features should be the main focus?",
+    "options": [],  # filled dynamically from detected features
+    "allow_custom": True,
+    "custom_placeholder": "Tell us what to focus on...",
+}
 
-_API_QUESTIONS = [
-    "Should we include real API request/response examples with curl or code snippets?",
-]
-
-_ML_QUESTIONS = [
-    "Should we include benchmark results or performance comparisons?",
-]
-
-_LENGTH_QUESTION = (
-    "How long should the article be? Options: A) Short (~800 words)  "
-    "B) Medium (~1500 words, recommended)  C) Long (~2500 words)"
-)
+_LENGTH_MCQ: dict = {
+    "question": "How long should the article be?",
+    "options": [
+        {"id": "a", "label": "Short", "description": "~800 words, quick overview"},
+        {"id": "b", "label": "Medium", "description": "~1500 words, solid coverage"},
+        {"id": "c", "label": "Long", "description": "~2500 words, comprehensive deep-dive"},
+    ],
+    "allow_custom": False,
+    "custom_placeholder": "",
+}
 
 
 @dataclass
@@ -60,7 +78,7 @@ class ArticleSession:
     answers: dict[str, str] = field(default_factory=dict)
     draft: str = ""
 
-    _question_queue: list[str] = field(default_factory=list)
+    _question_queue: list[dict] = field(default_factory=list)
     _asked: list[str] = field(default_factory=list)
 
     # ── Feature / question setup ──────────────────────────────────────────────
@@ -70,37 +88,40 @@ class ArticleSession:
         self.features = features
         self._build_question_queue()
         self.state = ArticleSessionState.QUESTIONING
-        log.info("Session %s: features set, %d questions queued",
+        log.info("Session %s: features set, %d MCQ rounds queued",
                  self.session_id, len(self._question_queue))
 
     def _build_question_queue(self) -> None:
-        """Construct a context-aware question list based on detected features."""
-        questions = list(_BASE_QUESTIONS)
+        """Construct MCQ rounds based on detected features."""
+        import copy
+        questions: list[dict] = [copy.deepcopy(q) for q in _MCQ_BANK]
 
-        feature_text = " ".join(self.features).lower()
+        # Add feature focus question if enough features detected
+        if len(self.features) >= 3:
+            fq = copy.deepcopy(_FEATURE_MCQ)
+            fq["options"] = [
+                {"id": chr(97 + i), "label": f, "description": ""}
+                for i, f in enumerate(self.features[:8])
+            ]
+            questions.append(fq)
 
-        if len(self.features) >= 4:
-            questions += _FEATURE_QUESTIONS
-
-        if any(kw in feature_text for kw in ("api", "endpoint", "rest", "graphql", "http")):
-            questions += _API_QUESTIONS
-
-        if any(kw in feature_text for kw in ("model", "ml", "ai", "train", "predict", "benchmark")):
-            questions += _ML_QUESTIONS
-
-        questions.append(_LENGTH_QUESTION)
+        questions.append(copy.deepcopy(_LENGTH_MCQ))
         self._question_queue = questions
 
     # ── Q&A state management ───────────────────────────────────────────────────
 
-    def next_question(self) -> str | None:
-        """Return the next unanswered question, or None if all answered."""
-        remaining = [q for q in self._question_queue if q not in self._asked]
-        if not remaining:
+    def next_question(self) -> dict | None:
+        """Return the next MCQ dict, or None if all answered."""
+        idx = len(self._asked)
+        if idx >= len(self._question_queue):
             return None
-        q = remaining[0]
-        self._asked.append(q)
-        return q
+        mcq = self._question_queue[idx]
+        self._asked.append(mcq["question"])
+        return {
+            "round": idx + 1,
+            "total_rounds": len(self._question_queue),
+            **mcq,
+        }
 
     def record_answer(self, answer: str) -> None:
         """Store the user's answer to the last-asked question."""

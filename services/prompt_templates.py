@@ -1,9 +1,8 @@
 """
 Prompt templates for each content generation type.
 
-Each builder receives a standardised `RepoContext` dict (from the shared
-retrieval pipeline) and content-type-specific options, then returns a
-fully-assembled prompt string ready for the AI service.
+Each builder follows the instruction hierarchy:
+  System Context → Task → Examples → Input Data → Output Format → Self-Verification
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ def build_linkedin_prompt(
     metadata: ProjectMetadata,
     tone: str = "thought_leader",
     focus: str = "business_value",
+    user_preferences: str = "",
 ) -> str:
     """Build a prompt that generates a LinkedIn announcement post."""
 
@@ -47,8 +47,7 @@ def build_linkedin_prompt(
     focus_guide = {
         "business_value": (
             "Emphasise the BUSINESS PROBLEM this project solves, the target users, "
-            "and the measurable impact (users served, time saved, processes automated). "
-            "Translate technical features into business outcomes."
+            "and the measurable impact. Translate technical features into business outcomes."
         ),
         "technical": (
             "Emphasise the TECHNICAL INNOVATIONS — architecture choices, stack decisions, "
@@ -67,9 +66,33 @@ def build_linkedin_prompt(
         "stories about building real software, with concrete details and takeaways."
     )
 
+    example = """
+### EXAMPLE OF A GOOD LINKEDIN POST:
+
+I spent 3 weekends building something I wish existed at my last job.
+
+Our team wasted 2+ hours every sprint manually generating release notes from Jira tickets. So I built ReleaseBot — a CLI tool that reads your Git history, maps commits to tickets, and generates polished release notes in seconds.
+
+Here's what it does:
+→ Parses conventional commits and links them to Jira/Linear tickets
+→ Groups changes by type (features, fixes, breaking changes)
+→ Generates markdown release notes with one command
+→ Supports custom templates for different audiences (engineering vs. product)
+
+Built with Python, Click, and the Jira REST API. The whole thing is ~800 lines of code.
+
+The best part? It caught 3 missing ticket references in our last release that would've slipped through.
+
+Open source and ready to use: https://github.com/user/releasebot
+
+What's a repetitive task on your team that's begging to be automated?
+
+#OpenSource #DeveloperTools #Python #Automation
+"""
+
     instructions = f"""
 ### TASK:
-Write a LinkedIn post announcing/showcasing this project. The post should feel authentic
+Write a LinkedIn post announcing/showcasing this project. It should feel authentic
 and personal — NOT like a press release or marketing copy.
 
 ### TONE:
@@ -88,7 +111,14 @@ and personal — NOT like a press release or marketing copy.
 7. **LENGTH**: Keep it under 1300 characters for optimal LinkedIn engagement.
 8. **NO markdown formatting** — LinkedIn uses plain text. Use line breaks and → for structure.
 9. **Use emojis sparingly** — max 3-4 in the entire post, placed strategically.
-10. Output ONLY the post text. No commentary, no wrapping.
+10. Output ONLY the post text. No commentary, no wrapping, no scratchpad.
+
+### SELF-VERIFICATION:
+Before outputting, check:
+- The hook would make YOU stop scrolling
+- Every claim is backed by the actual source code
+- Tech stack mentions match what's in the codebase
+- It reads like a real person wrote it, not a template
 """
 
     input_data = f"""
@@ -110,10 +140,12 @@ and personal — NOT like a press release or marketing copy.
 {file_contents[:60_000]}
 </source_code>
 
+{user_preferences}
+
 Now write the LinkedIn post.
 """
 
-    return f"{system_context}\n\n{instructions}\n\n{input_data}"
+    return f"{system_context}\n{example}\n{instructions}\n{input_data}"
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +161,7 @@ def build_article_prompt(
     tone: str = "professional",
     article_style: str = "deep_dive",
     target_length: str = "medium",
+    user_preferences: str = "",
 ) -> str:
     """Build a prompt that generates a full technical article."""
 
@@ -157,15 +190,48 @@ def build_article_prompt(
     }
 
     system_context = (
-        "You are a senior technical writer who publishes on platforms like Medium, Dev.to, "
-        "and Hashnode. Your articles are known for being deeply technical yet highly readable, "
-        f"with a {tone} tone. You explain complex concepts with clarity and always back "
-        "claims with concrete code examples from the actual project."
+        "You are a senior technical writer who publishes on Medium, Dev.to, and Hashnode. "
+        "Your articles are deeply technical yet highly readable. You explain complex concepts "
+        f"with clarity in a {tone} tone and always back claims with real code examples."
     )
 
     style_instruction = style_guide.get(article_style, style_guide["deep_dive"]).format(
         project_name=project_name
     )
+
+    example = """
+### EXAMPLE OF GOOD ARTICLE STRUCTURE:
+
+# Building a Real-Time Notification System That Actually Scales
+
+When our team hit 10K concurrent WebSocket connections, everything broke. Here's how we rebuilt it.
+
+## The Problem: Why Simple WebSockets Don't Scale
+
+[2-3 paragraphs explaining the real problem with specific numbers]
+
+## Architecture: Event-Driven with Redis Pub/Sub
+
+[Explain the design with a clear data flow description]
+
+```python
+# The core message router — handles fan-out to connected clients
+class MessageRouter:
+    async def broadcast(self, channel: str, payload: dict):
+        subscribers = self._registry.get(channel, [])
+        await asyncio.gather(*[s.send(payload) for s in subscribers])
+```
+
+## The Tricky Part: Handling Reconnections Gracefully
+
+[Deep dive into the hardest engineering challenge]
+
+## What I'd Do Differently
+
+1. **Start with SSE, not WebSockets** — For our use case, Server-Sent Events would have been simpler.
+2. **Add backpressure earlier** — We learned this the hard way at 50K connections.
+3. **Use protocol buffers** — JSON serialization became a bottleneck.
+"""
 
     instructions = f"""
 ### TASK:
@@ -181,12 +247,18 @@ Write a complete technical article about this project.
 1. **Title**: A compelling, specific title (not generic like "Building a Web App").
 2. **Introduction**: Hook the reader with the problem being solved in 2-3 sentences.
 3. **Structure**: Use H2 and H3 headings. Each section should be scannable.
-4. **Code Snippets**: Include 3-5 relevant code snippets from the actual project files. Always specify the language in fenced code blocks.
-5. **Architecture**: Include at least one section explaining the system architecture or data flow.
+4. **Code Snippets**: Include 3-5 relevant code snippets from the actual project files. Fenced code blocks with language tags.
+5. **Architecture**: At least one section explaining system architecture or data flow.
 6. **Lessons Learned**: End with 3-5 concrete, specific takeaways (not generic advice).
-7. **Conclusion**: End with a summary and link to the repository.
-8. **Output raw markdown**. Do NOT wrap in ```markdown blocks.
-9. Do NOT include a scratchpad or reasoning block — output the article directly.
+7. **Conclusion**: Summary and link to the repository.
+8. **Output raw markdown**. No ```markdown blocks. No scratchpad. No preamble.
+
+### SELF-VERIFICATION:
+Before outputting, check:
+- Every code snippet comes from the actual source code provided
+- No features are mentioned that don't exist in the codebase
+- The article would teach a reader something genuinely useful
+- Each section earns its place — no filler paragraphs
 """
 
     input_data = f"""
@@ -208,10 +280,12 @@ Write a complete technical article about this project.
 {file_contents[:80_000]}
 </source_code>
 
+{user_preferences}
+
 Now write the article.
 """
 
-    return f"{system_context}\n\n{instructions}\n\n{input_data}"
+    return f"{system_context}\n{example}\n{instructions}\n{input_data}"
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +302,7 @@ def build_resume_prompt(
     seniority: str = "mid",
     num_bullets: int = 5,
     include_metrics: bool = True,
+    user_preferences: str = "",
 ) -> str:
     """Build a prompt that generates ATS-optimised resume bullet points."""
 
@@ -235,29 +310,46 @@ def build_resume_prompt(
     if include_metrics:
         metrics_instruction = (
             "Where possible, include QUANTIFIABLE METRICS (e.g., number of API endpoints, "
-            "files processed, concurrent users supported, response time improvements). "
-            "If exact numbers aren't in the source code, make reasonable estimates based "
-            "on the codebase size and architecture, but keep them realistic."
+            "files processed, concurrent users supported). If exact numbers aren't in the "
+            "source code, make reasonable estimates based on codebase size and architecture, "
+            "but keep them realistic."
         )
 
-    # Seniority-specific guidance
     seniority_guidance = {
-        "intern": "Focus on learning, contributions to team projects, and foundational technical skills. Use verbs like 'Contributed', 'Assisted', 'Learned', 'Supported'.",
-        "junior": "Emphasize feature implementation, bug fixes, and growing technical skills. Use verbs like 'Developed', 'Implemented', 'Fixed', 'Built'.",
-        "mid": "Highlight ownership of features/modules, technical decisions, and cross-functional collaboration. Use verbs like 'Designed', 'Architected', 'Led', 'Optimized'.",
-        "senior": "Showcase system design, technical leadership, mentorship, and business impact. Use verbs like 'Architected', 'Spearheaded', 'Mentored', 'Drove'.",
-        "staff": "Demonstrate strategic technical vision, cross-team influence, and organizational impact. Use verbs like 'Established', 'Pioneered', 'Influenced', 'Transformed'.",
-        "principal": "Emphasize company-wide technical strategy, innovation, and industry leadership. Use verbs like 'Defined', 'Pioneered', 'Evangelized', 'Revolutionized'.",
+        "intern": "Focus on learning and contributions. Verbs: 'Contributed', 'Assisted', 'Supported'.",
+        "junior": "Emphasize feature implementation and technical skills. Verbs: 'Developed', 'Implemented', 'Built'.",
+        "mid": "Highlight ownership and technical decisions. Verbs: 'Designed', 'Architected', 'Led', 'Optimized'.",
+        "senior": "Showcase system design and leadership. Verbs: 'Architected', 'Spearheaded', 'Mentored', 'Drove'.",
+        "staff": "Demonstrate strategic vision and cross-team influence. Verbs: 'Established', 'Pioneered', 'Influenced'.",
+        "principal": "Emphasize company-wide strategy and innovation. Verbs: 'Defined', 'Pioneered', 'Evangelized'.",
     }
-    
+
     seniority_context = seniority_guidance.get(seniority.lower(), seniority_guidance["mid"])
 
     system_context = (
         "You are a senior technical resume coach who has helped 500+ engineers land jobs "
         "at top tech companies. You write ATS-optimized bullet points that are specific, "
-        "impactful, and tailored to the target role. You NEVER write generic filler — "
-        "every bullet point demonstrates a concrete technical contribution."
+        "impactful, and tailored to the target role. Every bullet demonstrates a concrete "
+        "technical contribution."
     )
+
+    example = f"""
+### EXAMPLE OUTPUT (for a mid-level Full Stack Engineer):
+
+```json
+{{
+    "repo_description": "Full-stack task management platform with real-time collaboration, role-based access control, and automated workflow triggers",
+    "bullets": [
+        "Designed and implemented a real-time collaboration engine using WebSocket connections, supporting concurrent editing across 15+ task boards with sub-100ms latency",
+        "Architected a role-based access control system with 4 permission tiers, securing 12 REST API endpoints and reducing unauthorized access incidents to zero",
+        "Built an automated workflow trigger system processing 500+ daily task state transitions with configurable rules and Slack/email notification integration",
+        "Optimized PostgreSQL query performance by implementing composite indexes and query batching, reducing average API response time from 800ms to 120ms",
+        "Developed a responsive React dashboard with 8 interactive components, achieving 95+ Lighthouse performance score through code splitting and lazy loading"
+    ],
+    "skills_demonstrated": ["React", "Node.js", "PostgreSQL", "WebSocket", "REST API Design", "RBAC", "Performance Optimization"]
+}}
+```
+"""
 
     instructions = f"""
 ### TASK:
@@ -270,28 +362,32 @@ Analyse this project's source code and generate resume-ready content.
 {seniority_context}
 
 ### REQUIREMENTS:
-1. Generate exactly {num_bullets} bullet points for the experience/projects section of a resume.
-2. Generate a 1-sentence project description suitable for a resume header.
-3. Extract a list of demonstrated technical skills from the codebase.
+1. Generate exactly {num_bullets} bullet points for the experience/projects section.
+2. Generate a 1-sentence project description for a resume header.
+3. Extract demonstrated technical skills from the codebase.
 
 ### BULLET POINT RULES:
 - Start each bullet with a STRONG ACTION VERB appropriate for {seniority.upper()} level.
-- Each bullet should be 1-2 lines long (15-25 words ideal).
-- Focus on IMPACT and COMPLEXITY appropriate for a {seniority.upper()} {role_target}.
-- {metrics_instruction if include_metrics else "Focus on the technical complexity and scope."}
-- Tailor the language and emphasis to a **{role_target}** position at **{seniority.upper()}** level.
+- Each bullet: 1-2 lines (15-25 words ideal).
+- Focus on IMPACT and COMPLEXITY appropriate for {seniority.upper()} {role_target}.
+- {metrics_instruction if include_metrics else "Focus on technical complexity and scope."}
 - Do NOT use first person (no "I" or "my").
+- Every bullet must be backed by actual code in the source files.
 
 ### OUTPUT FORMAT:
-Return ONLY a valid JSON object with this exact structure (no markdown wrapping, no commentary):
+Return ONLY a valid JSON object — no markdown wrapping, no commentary:
 {{
-    "repo_description": "One sentence describing the project for a resume header",
-    "bullets": [
-        "First bullet point...",
-        "Second bullet point..."
-    ],
-    "skills_demonstrated": ["Skill1", "Skill2", "Skill3"]
+    "repo_description": "One sentence describing the project",
+    "bullets": ["First bullet...", "Second bullet..."],
+    "skills_demonstrated": ["Skill1", "Skill2"]
 }}
+
+### SELF-VERIFICATION:
+Before outputting, check:
+- Every bullet references something actually in the codebase
+- Metrics are realistic and defensible in an interview
+- Skills listed match technologies actually used in the project
+- The JSON is valid and parseable
 """
 
     input_data = f"""
@@ -313,7 +409,9 @@ Return ONLY a valid JSON object with this exact structure (no markdown wrapping,
 {file_contents[:60_000]}
 </source_code>
 
+{user_preferences}
+
 Now generate the resume content as JSON.
 """
 
-    return f"{system_context}\n\n{instructions}\n\n{input_data}"
+    return f"{system_context}\n{example}\n{instructions}\n{input_data}"

@@ -36,6 +36,8 @@ class AIService:
         
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(self.invoke_url, headers=headers, json=payload)
+            if response.status_code != 200:
+                log.error("❌ NVIDIA API error %d: %s", response.status_code, response.text)
             response.raise_for_status()
             data = response.json()
             response_text = data["choices"][0]["message"]["content"]

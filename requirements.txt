@@ -9,3 +9,4 @@ gitingest
 chromadb
 google-generativeai
 tiktoken
+sentence-transformers

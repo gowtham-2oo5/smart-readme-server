@@ -27,11 +27,13 @@ from models import (
     ReadmeRequest,
     ReadmeResponse,
     ResumeRequest,
+    SessionStartRequest,
     WSMessageIn,
 )
 from services.ai_service import AIService
 from services.article_builder import ArticleBuilder
 from services.article_session import ArticleSession
+from services.content_session import ContentSession
 from services.file_service import FileService
 from services.gemini_service import GeminiService
 from services.ingestion_service import IngestionService
@@ -485,6 +487,11 @@ async def _run_ingestion(session_id: str, owner: str, repo: str) -> None:
 
     try:
         async for progress_msg in ingestion_svc.ingest_repo(owner, repo, session_id):
+            # Stop wasting work if the client disconnected
+            if ws_manager.has_disconnected(session_id):
+                log.info("Client disconnected during ingestion — aborting session %s", session_id)
+                return
+
             if progress_msg.startswith("__features_identified__:"):
                 # Sentinel indicating feature identification is done
                 raw = progress_msg.split(":", 1)[1]
@@ -533,6 +540,10 @@ async def article_websocket(websocket: WebSocket, session_id: str):
     await ws_manager.connect(session_id, websocket)
 
     # If ingestion already finished before WS connected, send current state
+    if session.state == ArticleSessionState.ERROR:
+        await ws_manager.send_error(session_id, "Ingestion failed before connection was established.")
+        return
+
     if session.state == ArticleSessionState.QUESTIONING and session.features:
         await ws_manager.send_features(session_id, session.features)
         q = session.next_question()
@@ -547,8 +558,12 @@ async def article_websocket(websocket: WebSocket, session_id: str):
             raw = await websocket.receive_json()
             msg = WSMessageIn(**raw)
 
-            if msg.type == "answer":
-                session.record_answer(msg.data)
+            if msg.type == "answer" or msg.type == "mcq_answer":
+                # Accept both plain answer and structured mcq_answer
+                answer_text = msg.data
+                if isinstance(msg.data, dict):
+                    answer_text = msg.data.get("custom_text") or msg.data.get("option_id", "")
+                session.record_answer(str(answer_text))
 
                 if session.has_enough_context:
                     # All Q&A done — generate the article
@@ -609,6 +624,164 @@ async def _stream_article_from_prompt(
         log.info("Article generation done for session %s: %d words", session.session_id, word_count)
     except Exception as exc:
         log.error("Streaming failed for session %s: %s", session.session_id, exc)
+        session.mark_error()
+        await ws_manager.send_error(session.session_id, f"Generation failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Generic MCQ Content Sessions (README, LinkedIn, Resume)
+# ---------------------------------------------------------------------------
+
+_content_sessions: dict[str, ContentSession] = {}
+
+
+@app.post("/session/start", response_model=ArticleStartResponse)
+async def session_start(request: SessionStartRequest, background_tasks: BackgroundTasks):
+    """Start a generic MCQ-driven content generation session."""
+    if request.content_type not in ("readme", "linkedin", "resume"):
+        raise HTTPException(status_code=400, detail=f"Invalid content_type: {request.content_type}")
+
+    session_id = str(uuid.uuid4())
+    session = ContentSession(
+        session_id=session_id,
+        owner=request.owner_name,
+        repo=request.repo_name,
+        content_type=request.content_type,
+    )
+    _content_sessions[session_id] = session
+    log.info("🆕 Content session %s [%s] for %s/%s",
+             session_id, request.content_type, request.owner_name, request.repo_name)
+
+    background_tasks.add_task(
+        _run_content_ingestion,
+        session_id=session_id,
+        owner=request.owner_name,
+        repo=request.repo_name,
+    )
+
+    return ArticleStartResponse(
+        session_id=session_id,
+        status=ArticleSessionState.INGESTING,
+        message=f"Session started. Connect to WS /ws/session/{session_id}",
+    )
+
+
+async def _run_content_ingestion(session_id: str, owner: str, repo: str) -> None:
+    """Background: ingest repo and identify features for a content session."""
+    session = _content_sessions.get(session_id)
+    if session is None:
+        return
+
+    ingestion_svc = _get_ingestion_service()
+
+    try:
+        async for progress_msg in ingestion_svc.ingest_repo(owner, repo, session_id, skip_embedding=True):
+            # Stop wasting work if the client disconnected
+            if ws_manager.has_disconnected(session_id):
+                log.info("Client disconnected during content ingestion — aborting session %s", session_id)
+                return
+
+            if progress_msg.startswith("__features_identified__:"):
+                raw = progress_msg.split(":", 1)[1]
+                features = [f.strip() for f in raw.split(",") if f.strip()]
+                session.set_features(features)
+                await ws_manager.send_features(session_id, features)
+                first_q = session.next_question()
+                if first_q:
+                    await ws_manager.send_question(session_id, first_q)
+            else:
+                await ws_manager.send_progress(session_id, progress_msg)
+    except Exception as exc:
+        log.error("❌ Content ingestion failed for session %s: %s", session_id, exc)
+        session.mark_error()
+        await ws_manager.send_error(session_id, f"Ingestion failed: {exc}")
+
+
+@app.websocket("/ws/session/{session_id}")
+async def content_websocket(websocket: WebSocket, session_id: str):
+    """WebSocket for generic MCQ content sessions."""
+    session = _content_sessions.get(session_id)
+    if session is None:
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "data": f"Session '{session_id}' not found."})
+        await websocket.close()
+        return
+
+    await ws_manager.connect(session_id, websocket)
+
+    if session.state == ArticleSessionState.ERROR:
+        await ws_manager.send_error(session_id, "Ingestion failed before connection.")
+        return
+
+    if session.state == ArticleSessionState.QUESTIONING and session.features:
+        await ws_manager.send_features(session_id, session.features)
+        q = session.next_question()
+        if q:
+            await ws_manager.send_question(session_id, q)
+
+    readme_svc = get_readme_service()
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            msg = WSMessageIn(**raw)
+
+            if msg.type in ("answer", "mcq_answer"):
+                answer_text = msg.data
+                if isinstance(msg.data, dict):
+                    answer_text = msg.data.get("custom_text") or msg.data.get("option_id", "")
+                session.record_answer(str(answer_text))
+
+                if session.has_enough_context:
+                    await _generate_content(session, readme_svc)
+                else:
+                    next_q = session.next_question()
+                    if next_q:
+                        await ws_manager.send_question(session_id, next_q)
+
+    except WebSocketDisconnect:
+        log.info("WS disconnected from content session %s", session_id)
+    except Exception as exc:
+        log.error("WS error on content session %s: %s", session_id, exc)
+        await ws_manager.send_error(session_id, str(exc))
+    finally:
+        ws_manager.disconnect(session_id)
+
+
+async def _generate_content(session: ContentSession, readme_svc: ReadmeService) -> None:
+    """Generate content using the existing service, stream result to client."""
+    session.mark_generating()
+    params = session.get_generation_params()
+
+    try:
+        if session.content_type == "readme":
+            result = await readme_svc.generate_readme(
+                owner=session.owner,
+                repo=session.repo,
+                banner_config=BannerConfig(**params.pop("banner_config")),
+                **params,
+            )
+            content = result.get("readme_content", "")
+        else:
+            ct = ContentType.LINKEDIN if session.content_type == "linkedin" else ContentType.RESUME
+            result = await readme_svc.generate_content(
+                owner=session.owner,
+                repo=session.repo,
+                content_type=ct,
+                **params,
+            )
+            content = result.get("content", "")
+
+        # Stream in chunks to match the article UX
+        chunk_size = 80
+        for i in range(0, len(content), chunk_size):
+            await ws_manager.send_article_chunk(session.session_id, content[i:i + chunk_size])
+
+        session.mark_done(content)
+        await ws_manager.send_article_done(session.session_id, len(content.split()))
+
+    except Exception as exc:
+        log.error("Content generation failed for session %s: %s", session.session_id, exc)
         session.mark_error()
         await ws_manager.send_error(session.session_id, f"Generation failed: {exc}")
 

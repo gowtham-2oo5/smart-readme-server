@@ -162,6 +162,15 @@ class ArticleStartRequest(BaseModel):
     repo_name: str = Field(..., min_length=1, description="GitHub repo name")
 
 
+class SessionStartRequest(BaseModel):
+    """Request to start a generic MCQ-driven content session."""
+    model_config = ConfigDict(extra="ignore")
+
+    owner_name: str = Field(..., min_length=1, description="GitHub repo owner")
+    repo_name: str = Field(..., min_length=1, description="GitHub repo name")
+    content_type: str = Field(..., description="readme | linkedin | resume")
+
+
 class ArticleStartResponse(BaseModel):
     """Returned immediately after POST /article/start."""
     session_id: str
@@ -171,8 +180,8 @@ class ArticleStartResponse(BaseModel):
 
 class WSMessageIn(BaseModel):
     """Message from client → server over WebSocket."""
-    type: str   # "answer" | "tune" | "regenerate"
-    data: str = ""
+    type: str   # "answer" | "mcq_answer" | "tune" | "regenerate"
+    data: Any = ""
 
 
 class WSMessageOut(BaseModel):

@@ -8,6 +8,8 @@ __pycache__/
 dist/
 build/
 
+.kiro/
+.inspos/
 # Virtual Environment
 .venv/
 venv/
@@ -41,7 +43,7 @@ refs/
 # OS
 .DS_Store
 Thumbs.db
-.agent
+# .agent
 *.md
 !README.md
 test_*.py

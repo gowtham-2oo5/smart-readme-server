@@ -36,21 +36,23 @@ class ArticleBuilder:
         target_words = session.target_length_words()
 
         # Pull rich context for different article angles
+        # With reranking, we can safely fetch more candidates — the cross-encoder
+        # will surface the most relevant ones.
         overview_chunks = await self._rag.retrieve(
             session.session_id,
-            query="project overview, main purpose, what does it do",
-            k=5,
+            query="project overview, main purpose, what does it do, problem solved",
+            k=8,
         )
         impl_chunks = await self._rag.retrieve(
             session.session_id,
-            query="implementation details, architecture, core logic",
-            k=5,
+            query="implementation details, architecture, core logic, algorithms, data flow",
+            k=8,
             chunk_types=["function", "class"],
         )
         config_chunks = await self._rag.retrieve(
             session.session_id,
-            query="setup, configuration, dependencies, tech stack",
-            k=3,
+            query="setup, configuration, dependencies, tech stack, environment",
+            k=5,
             chunk_types=["config"],
         )
 
@@ -103,6 +105,12 @@ ARTICLE REQUIREMENTS:
 5. **Accuracy** — Only describe features and code patterns that appear in the
    codebase context. Do not invent capabilities.
 
+6. **Self-verification** — Before outputting, verify:
+   - Every code snippet comes from the codebase context above
+   - No features are mentioned that aren't evidenced in the code
+   - The article teaches something genuinely useful
+   - Each section earns its place — no filler paragraphs
+
 Write the complete article now. Do NOT include any preamble or meta-commentary.
 Start directly with the article title (use # for title).
 """
@@ -113,7 +121,7 @@ Start directly with the article title (use # for title).
 def _format_chunks(label: str, chunks: list[str]) -> str:
     if not chunks:
         return ""
-    joined = "\n---\n".join(c[:600] for c in chunks)
+    joined = "\n---\n".join(c[:800] for c in chunks)
     return f"\n### {label}\n{joined}\n"
 
 

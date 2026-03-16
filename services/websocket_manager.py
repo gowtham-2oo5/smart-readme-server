@@ -23,12 +23,14 @@ class ConnectionManager:
 
     def __init__(self):
         self._connections: dict[str, WebSocket] = {}
+        self._ever_connected: set[str] = set()  # tracks sessions that had a WS at some point
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         self._connections[session_id] = websocket
+        self._ever_connected.add(session_id)
         log.info("WS connected: session %s (total: %d)", session_id, len(self._connections))
 
     def disconnect(self, session_id: str) -> None:
@@ -60,8 +62,8 @@ class ConnectionManager:
     async def send_features(self, session_id: str, features: list[str]) -> None:
         await self.send(session_id, "features_identified", features)
 
-    async def send_question(self, session_id: str, question: str) -> None:
-        await self.send(session_id, "question", question)
+    async def send_question(self, session_id: str, question: Any) -> None:
+        await self.send(session_id, "mcq", question)
 
     async def send_article_chunk(self, session_id: str, chunk: str) -> None:
         await self.send(session_id, "article_chunk", chunk)
@@ -80,6 +82,10 @@ class ConnectionManager:
 
     def is_connected(self, session_id: str) -> bool:
         return session_id in self._connections
+
+    def has_disconnected(self, session_id: str) -> bool:
+        """True if the client connected at some point but is now gone."""
+        return session_id in self._ever_connected and session_id not in self._connections
 
 
 # Module-level singleton — import this in main.py
